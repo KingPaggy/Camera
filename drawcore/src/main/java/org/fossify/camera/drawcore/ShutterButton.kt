@@ -90,21 +90,19 @@ class ShutterButton(private val parent: View) {
         val rec = recordAnim.set(if (isRecording) 1f else 0f)
         val pulse = pulseScale.set(pulseTarget)
 
-        val color = mixColor(PHOTO_COLOR, RECORD_COLOR, rec)
+        val color = mixColor(Colors.ACCENT, Colors.RECORD, rec)
 
-        // 绘制顺序 1：外环圆环（描边）；按下时描边略加粗
-        // 外环与内圆统一乘 pulse，实现整体「呼吸」脉冲
+        // 绘制顺序 1：外环灰描边圆（ColorOS 风），整体随 pulse 缩放
         paint.style = Paint.Style.STROKE
-        paint.color = color
-        paint.strokeWidth = DpUtils.dp(3).toFloat() +
-            DpUtils.dp(2) * press
+        paint.color = Colors.SHUTTER_RING
+        paint.strokeWidth = DpUtils.dp(2).toFloat()
         canvas.drawCircle(cx, cy, radius * pulse, paint)
 
-        // 绘制顺序 2：内圆（填充）；录像时略小成红点，按压缩到 ~0.9
-        // 缩放组合：press 与 pulse 同向，按乘法叠加（互不覆盖）
-        val innerBase = radius * (0.62f - 0.12f * rec)
-        val innerR = innerBase * (1f - 0.1f * press) * pulse
+        // 绘制顺序 2：内圆橙/红填充；按压缩到 ~0.9
+        val innerR = (radius - DpUtils.dp(10)) *
+            (1f - 0.1f * press) * pulse
         paint.style = Paint.Style.FILL
+        paint.color = color
         canvas.drawCircle(cx, cy, innerR, paint)
     }
 
@@ -153,7 +151,4 @@ class ShutterButton(private val parent: View) {
             (Color.blue(to) - Color.blue(from)) * t).toInt()
         return Color.argb(255, r, g, b)
     }
-
-    private val PHOTO_COLOR = Color.WHITE
-    private val RECORD_COLOR = Color.argb(255, 0xFF, 0x3B, 0x30)
 }

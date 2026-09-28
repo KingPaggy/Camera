@@ -64,38 +64,44 @@ class LastMediaThumbnail(private val parent: View) {
 
     fun draw(canvas: Canvas) {
         val b = bitmap ?: return
-        val cx = (left + right) / 2f
-        val cy = (top + bottom) / 2f
-        val radius = minOf(right - left, bottom - top) / 2f
-        if (radius <= 0f) return
+        val w = right - left
+        val h = bottom - top
+        if (w <= 0f || h <= 0f) return
 
-        // 1) 圆形裁剪的缩略图：BitmapShader + center-crop 缩放对齐
+        val corner = DpUtils.dp(12).toFloat()
         val stroke = DpUtils.dp(2).toFloat()
-        val innerR = radius - stroke / 2f
+
+        // 1) 圆角方形裁剪的缩略图：BitmapShader + center-crop
+        val inner = android.graphics.RectF(
+            left + stroke / 2, top + stroke / 2,
+            right - stroke / 2, bottom - stroke / 2)
         val shader = BitmapShader(b, Shader.TileMode.CLAMP,
             Shader.TileMode.CLAMP)
-        val scale = (innerR * 2f) / minOf(b.width, b.height)
+        val scale = inner.width() / minOf(b.width, b.height)
         shaderMatrix.setScale(scale, scale)
         shaderMatrix.postTranslate(
-            cx - b.width * scale / 2f,
-            cy - b.height * scale / 2f)
+            left + inner.width() / 2f - b.width * scale / 2f,
+            top + inner.height() / 2f - b.height * scale / 2f)
         shader.setLocalMatrix(shaderMatrix)
         paint.shader = shader
         paint.style = Paint.Style.FILL
-        canvas.drawCircle(cx, cy, innerR, paint)
+        canvas.drawRoundRect(inner, corner, corner, paint)
         paint.shader = null
 
-        // 2) 外圈 2dp 白描边
+        // 2) 外圈 2dp 白描边（圆角方形）
         paint.style = Paint.Style.STROKE
         paint.color = Color.WHITE
         paint.strokeWidth = stroke
-        canvas.drawCircle(cx, cy, radius - stroke / 2f, paint)
+        val outer = android.graphics.RectF(
+            left + stroke / 2, top + stroke / 2,
+            right - stroke / 2, bottom - stroke / 2)
+        canvas.drawRoundRect(outer, corner, corner, paint)
 
-        // 3) 按压态：半透明白覆盖层，区分按压
+        // 3) 按压态：半透明白覆盖层
         if (pressed) {
             paint.style = Paint.Style.FILL
             paint.color = PRESSED_OVERLAY
-            canvas.drawCircle(cx, cy, innerR, paint)
+            canvas.drawRoundRect(inner, corner, corner, paint)
         }
     }
 
@@ -127,14 +133,9 @@ class LastMediaThumbnail(private val parent: View) {
         }
     }
 
-    /** 命中检测：以 bounds 内切圆为热区。 */
+    /** 命中检测：以 bounds 矩形为热区（圆角方形近似）。 */
     private fun hit(x: Float, y: Float): Boolean {
-        val cx = (left + right) / 2f
-        val cy = (top + bottom) / 2f
-        val r = minOf(right - left, bottom - top) / 2f
-        val dx = x - cx
-        val dy = y - cy
-        return dx * dx + dy * dy <= r * r
+        return x in left..right && y in top..bottom
     }
 
     /** 当前 bounds（供宿主排除系统手势区）。 */

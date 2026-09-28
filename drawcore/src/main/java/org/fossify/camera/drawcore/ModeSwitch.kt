@@ -3,19 +3,17 @@ package org.fossify.camera.drawcore
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RectF
 import android.view.MotionEvent
 import android.view.View
 
 /**
- * 「照片 | 视频」吸附式切换（非 View 自绘助手，参照 Switch 轨道/拇指范式）。
+ * 「视频 | 照片」文字 tab 切换（ColorOS 风，docs/07 §7.2）。
  *
- * 背景：半透明黑圆角胶囊；选中档：半透明白圆角滑块。滑块位置由
- * modeAnim 在左/右两段之间平滑吸附（docs/06 §4.2：thumbX =
- * segmentIndex * segmentWidth，AnimatedFloat 取整吸附）。
- * 两段文字 alpha 按 modeAnim 进度在「纯白/半透白」间插值。
- *
- * 交互：DOWN 命中左/右段即切档 + 回调（点击即可，无需拖拽）。
+ * 不画背景胶囊，纯文字：选中档橙色 + 上方小三角，未选中白色。
+ * 位置：左段=视频，右段=照片。点击左右即切档。
+ * 颜色过渡由 modeAnim 在白/橙间插值。
  */
 class ModeSwitch(private val parent: View) {
 
@@ -23,13 +21,12 @@ class ModeSwitch(private val parent: View) {
     private var photoMode = true
     private var listener: ((Boolean) -> Unit)? = null
 
-    /** 0=照片(左) 1=视频(右)。 */
+    /** 0=视频(左) 1=照片(右)。 */
     private val modeAnim = AnimatedFloat(
         parent, 220L, CubicBezierInterpolator.EASE_OUT_QUINT)
 
-    private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val thumbPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val triPaint = Paint(Paint.ANTI_ALIAS_FLAG)
 
     fun setBounds(left: Float, top: Float, right: Float, bottom: Float) {
         rect.set(left, top, right, bottom)
@@ -51,39 +48,37 @@ class ModeSwitch(private val parent: View) {
 
     fun draw(canvas: Canvas) {
         if (rect.width() <= 0f || rect.height() <= 0f) return
-        // set() 必须在 draw/onDraw 内调用（docs/06 §2.3）
-        val p = modeAnim.set(if (photoMode) 0f else 1f)
+        // p: 0=视频选中 1=照片选中
+        val p = modeAnim.set(if (photoMode) 1f else 0f)
 
-        // 1) 背景胶囊：半透明黑
-        bgPaint.color = Color.argb(0x55, 0, 0, 0)
-        canvas.drawRoundRect(rect, rect.height() / 2f,
-            rect.height() / 2f, bgPaint)
-
-        // 2) 选中滑块：半透明白圆角矩形，在两段间滑动
-        val pad = DpUtils.dp(2).toFloat()
-        val thumbW = (rect.width() - 2 * pad) / 2f
-        val thumbLeft = rect.left + pad + p * thumbW
-        val thumb = RectF(thumbLeft, rect.top + pad,
-            thumbLeft + thumbW, rect.bottom - pad)
-        thumbPaint.color = Color.argb(0x99, 255, 255, 255)
-        canvas.drawRoundRect(thumb, thumb.height() / 2f,
-            thumb.height() / 2f, thumbPaint)
-
-        // 3) 两段文字：各居一段中心，alpha 随选中态插值
         textPaint.textSize = DpUtils.dp(13).toFloat()
         textPaint.textAlign = Paint.Align.CENTER
         val baseline = rect.centerY() -
             (textPaint.descent() + textPaint.ascent()) / 2f
-        val photoCx = rect.left + rect.width() / 4f
-        val videoCx = rect.right - rect.width() / 4f
 
-        textPaint.color = Color.argb(
-            (255 - 115 * p).toInt().coerceIn(0, 255), 255, 255, 255)
+        val videoCx = rect.left + rect.width() / 4f
+        val photoCx = rect.right - rect.width() / 4f
+
+        // 视频：p=0 时选中橙，p=1 时白
+        textPaint.color = mixColor(Colors.ACCENT, Color.WHITE, p)
+        canvas.drawText("视频", videoCx, baseline, textPaint)
+
+        // 照片：p=1 时选中橙，p=0 时白
+        textPaint.color = mixColor(Color.WHITE, Colors.ACCENT, p)
         canvas.drawText("照片", photoCx, baseline, textPaint)
 
-        textPaint.color = Color.argb(
-            (140 + 115 * p).toInt().coerceIn(0, 255), 255, 255, 255)
-        canvas.drawText("视频", videoCx, baseline, textPaint)
+        // 选中三角：在选中文字正上方
+        val triCx = if (photoMode) photoCx else videoCx
+        val triTop = rect.top
+        val triW = DpUtils.dp(4).toFloat()
+        val triH = DpUtils.dp(3).toFloat()
+        val tri = Path()
+        tri.moveTo(triCx, triTop)
+        tri.lineTo(triCx - triW, triTop + triH)
+        tri.lineTo(triCx + triW, triTop + triH)
+        tri.close()
+        triPaint.color = Colors.ACCENT
+        canvas.drawPath(tri, triPaint)
     }
 
     fun checkTouchEvent(event: MotionEvent): Boolean {
@@ -92,12 +87,23 @@ class ModeSwitch(private val parent: View) {
         val x = event.x
         val y = event.y
         if (!rect.contains(x, y)) return false
-        val wantPhoto = x < rect.centerX()
+        val wantPhoto = x >= rect.centerX()
         if (wantPhoto != photoMode) {
             photoMode = wantPhoto
             listener?.invoke(photoMode)
         }
         parent.invalidate()
         return true
+    }
+
+    /** ARGB 逐通道线性插值。 */
+    private fun mixColor(from: Int, to: Int, t: Float): Int {
+        val r = (Color.red(from) +
+            (Color.red(to) - Color.red(from)) * t).toInt()
+        val g = (Color.green(from) +
+            (Color.green(to) - Color.green(from)) * t).toInt()
+        val b = (Color.blue(from) +
+            (Color.blue(to) - Color.blue(from)) * t).toInt()
+        return Color.argb(255, r, g, b)
     }
 }

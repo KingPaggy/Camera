@@ -183,6 +183,11 @@ class MainActivity : SimpleActivity(), PhotoProcessor.MediaSavedListener,
             addView(drawView)
         }
         val previewView = findViewById<PreviewView>(R.id.preview_view)
+        // 4:3 画幅：FIT_CENTER 让画面完整居中（上下黑边），
+        // 再整体上移一个字高（13dp）。
+        previewView.scaleType = PreviewView.ScaleType.FIT_CENTER
+        val oneCharPx = (13 * resources.displayMetrics.density)
+        previewView.translationY = -oneCharPx
 
         mPreview = CameraXInitializer(this).createCameraXPreview(
             previewView,

@@ -58,6 +58,9 @@ class DrawView(context: Context) : View(context) {
     /** 计时器面板（顶部最左按钮 + 展开面板，选中项回写 uiState 并上报宿主）。 */
     private val timerPanel = TimerPanel(this)
 
+    /** 横向变焦档位条（占位，不接逻辑）。 */
+    private val zoomStrip = ZoomStrip(this)
+
     init {
         shutter.setOnShutterClickListener { listener?.onShutterClick() }
         modeSwitch.setOnModeChangedListener { isPhoto ->
@@ -115,76 +118,83 @@ class DrawView(context: Context) : View(context) {
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
 
-        // 快门：底部中央，圆心 (w/2, h-150dp)，半径 40dp。
+        // 快门：底部中央，圆心 (w/2, h-117dp)，半径 38dp。
         val shutterCx = w / 2f
-        val shutterCy = h - DpUtils.dp(150).toFloat()
-        val shutterR = DpUtils.dp(40).toFloat()
+        val shutterCy = h - DpUtils.dp(117).toFloat()
+        val shutterR = DpUtils.dp(38).toFloat()
         shutter.setBounds(shutterCx, shutterCy, shutterR)
 
-        // 模式切换：快门上方 24dp，水平居中，200dp x 48dp。
-        val sw = DpUtils.dp(200).toFloat()
-        val sh = DpUtils.dp(48).toFloat()
-        val gap = DpUtils.dp(24).toFloat()
-        val sBottom = shutterCy - shutterR - gap
-        val sLeft = (w - sw) / 2f
-        modeSwitch.setBounds(sLeft, sBottom - sh, sLeft + sw, sBottom)
+        // 缩略图：快门左侧，距左 24dp，56dp 圆角方，圆心 y 同快门。
+        val thumbD = DpUtils.dp(56).toFloat()
+        val thumbL = DpUtils.dp(24).toFloat()
+        lastMediaThumbnail.setBounds(
+            thumbL, shutterCy - thumbD / 2f,
+            thumbL + thumbD, shutterCy + thumbD / 2f)
 
-        // 录像计时文本：ModeSwitch 顶再往上 12dp，水平居中于 w/2，96dp x 36dp。
-        // 仅录像且 recordingDuration>0 时由组件自身绘制文本；平时不可见。
+        // 翻转：快门右侧，距右 24dp，44dp 圆，圆心 y 同快门。
+        val flipD = DpUtils.dp(44).toFloat()
+        val flipR = w - DpUtils.dp(24).toFloat()
+        flipCamera.setBounds(
+            flipR - flipD, shutterCy - flipD / 2f,
+            flipR, shutterCy + flipD / 2f)
+
+        // 模式栏（视频/照片 文字 tab）：居中 140dp x 28dp，
+        // 距屏幕底 31dp（上移一个字高）。
+        val sw = DpUtils.dp(140).toFloat()
+        val sh = DpUtils.dp(28).toFloat()
+        val sBottom = h - DpUtils.dp(31).toFloat()
+        modeSwitch.setBounds((w - sw) / 2f, sBottom - sh,
+            (w + sw) / 2f, sBottom)
+
+        // zoom 占位横条：距快门上边缘 16dp（约 1.2 字高）。
+        zoomStrip.setCenter(w / 2f,
+            shutterCy - shutterR - DpUtils.dp(16).toFloat())
+
+        // 顶部左上组：3 个 40dp 圆钮横排
+        // = FlashButton → TimerPanel → ResolutionButton。
+        val topD = DpUtils.dp(40).toFloat()
+        val topT = DpUtils.dp(48).toFloat()
+        val topGap = DpUtils.dp(12).toFloat()
+        val topL = DpUtils.dp(16).toFloat()
+        flashButton.setBounds(topL, topT, topL + topD, topT + topD)
+        val timerL = topL + (topD + topGap)
+        timerPanel.setBounds(timerL, topT, timerL + topD, topT + topD)
+        val resL = topL + 2 * (topD + topGap)
+        resolutionButton.setBounds(resL, topT, resL + topD, topT + topD)
+
+        // TimerPanel 展开面板：从计时器按钮正下方展开。
+        val panelW = DpUtils.dp(160).toFloat()
+        val panelH = DpUtils.dp(176).toFloat()
+        timerPanel.setPanelBounds(timerL,
+            topT + topD + DpUtils.dp(12).toFloat(),
+            timerL + panelW,
+            topT + topD + DpUtils.dp(12).toFloat() + panelH)
+
+        // 右上设置：44dp 圆钮，距右 16dp、距顶 48dp。
+        val setD = DpUtils.dp(44).toFloat()
+        settingsButton.setBounds(
+            w - DpUtils.dp(16).toFloat() - setD, topT,
+            w - DpUtils.dp(16).toFloat(), topT + setD)
+
+        // 录像计时文本：顶部居中，仅录像时可见。
         val rtW = DpUtils.dp(96).toFloat()
         val rtH = DpUtils.dp(36).toFloat()
-        val rtBottom = (sBottom - sh) - DpUtils.dp(12).toFloat()
-        val rtLeft = (w - rtW) / 2f
-        recordingTimer.setBounds(rtLeft, rtBottom - rtH,
-            rtLeft + rtW, rtBottom)
+        recordingTimer.setBounds((w - rtW) / 2f, topT,
+            (w + rtW) / 2f, topT + rtH)
 
-        // 曝光滑块：右侧竖条，右缘距右 24dp，宽 48dp，高 0.6h 垂直居中。
+        // 曝光滑块：右侧竖条保留不动（docs/07 §7.2）。
         val ew = DpUtils.dp(48).toFloat()
         val eh = h * 0.6f
         val eRight = w - DpUtils.dp(24).toFloat()
-        val eTop = (h - eh) / 2f
-        exposureSlider.setBounds(eRight - ew, eTop, eRight, eTop + eh)
-
-        // 顶部一排（避开状态栏，顶 48dp）：5 个 44dp 按钮水平居中、间距 12dp，
-        // 从左到右 = TimerPanel（计时器）→ FlipCamera（翻转）→ FlashButton（闪光）
-        // → SettingsButton（设置）→ ResolutionButton（分辨率）。
-        // 组宽 = 5*44 + 4*12 = 268dp，组左缘 = (w - 268dp)/2。
-        val topD = DpUtils.dp(44).toFloat()
-        val topT = DpUtils.dp(48).toFloat()
-        val topGap = DpUtils.dp(12).toFloat()
-        val groupW = 5 * topD + 4 * topGap
-        val groupL = (w - groupW) / 2f
-        fun xAt(i: Int) = groupL + i * (topD + topGap)
-        timerPanel.setBounds(xAt(0), topT, xAt(0) + topD, topT + topD)
-        flipCamera.setBounds(xAt(1), topT, xAt(1) + topD, topT + topD)
-        flashButton.setBounds(xAt(2), topT, xAt(2) + topD, topT + topD)
-        settingsButton.setBounds(xAt(3), topT, xAt(3) + topD, topT + topD)
-        resolutionButton.setBounds(xAt(4), topT, xAt(4) + topD, topT + topD)
-
-        // TimerPanel 展开面板：从计时器按钮正下方（左缘与按钮对齐）向下展开，
-        // 宽 160dp、高 4 行 × 44dp ≈ 176dp，按钮下方留 12dp 间距。
-        val panelW = DpUtils.dp(160).toFloat()
-        val panelH = DpUtils.dp(176).toFloat()
-        val panelL = xAt(0)
-        val panelT = topT + topD + DpUtils.dp(12).toFloat()
-        timerPanel.setPanelBounds(panelL, panelT,
-            panelL + panelW, panelT + panelH)
-
-        // 最近媒体缩略图：快门左侧圆形，直径 52dp，圆心 y 与快门一致。
-        val thumbD = DpUtils.dp(52).toFloat()
-        val thumbHalf = thumbD / 2f
-        val thumbCx =
-            shutterCx - shutterR - DpUtils.dp(24).toFloat() - thumbHalf
-        lastMediaThumbnail.setBounds(
-            thumbCx - thumbHalf, shutterCy - thumbHalf,
-            thumbCx + thumbHalf, shutterCy + thumbHalf,
-        )
+        exposureSlider.setBounds(eRight - ew, (h - eh) / 2f,
+            eRight, (h + eh) / 2f)
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        // 半透明底，便于在相机预览上观察 Overlay。
-        canvas.drawColor(0x33000000)
+        // 不画不透明背景：DrawView 浮在 CameraX PreviewView 之上，
+        // 必须透明才能让预览画面透出来（docs/07 §7.3 黑底由
+        // 窗口/PreviewView 自身承担，不在 overlay 上画）。
 
         // 每帧从 uiState 拉状态进组件（onDraw 只读字段，不改 uiState）。
         exposureSlider.setRange(uiState.exposureRange)
@@ -198,30 +208,30 @@ class DrawView(context: Context) : View(context) {
         recordingTimer.setDurationNanos(uiState.recordingDuration)
         timerPanel.setTimerMode(uiState.timerMode)
 
-        // 顺序：翻转 → 闪光 → 设置 → 分辨率(含面板) → 计时器面板 → 录像计时
-        // 文本 → 曝光滑块 → 模式切换 → 缩略图 → 快门。
-        // 顶排两个展开面板（分辨率/计时器）在其按钮之后绘制，保证展开时
-        // 盖在顶部按钮之上；后绘的计时器面板层叠在其上。
-        flipCamera.draw(canvas)
+        // 顺序：曝光滑块 → zoom 条 → 计时器面板 → 分辨率面板 → 录像计时
+        // → 闪光 → 设置 → 翻转 → 缩略图 → 模式 tab → 快门（最上层）。
+        exposureSlider.draw(canvas)
+        zoomStrip.draw(canvas)
+        timerPanel.draw(canvas)
+        resolutionButton.draw(canvas)
+        recordingTimer.draw(canvas)
         flashButton.draw(canvas)
         settingsButton.draw(canvas)
-        resolutionButton.draw(canvas)
-        timerPanel.draw(canvas)
-        recordingTimer.draw(canvas)
-        exposureSlider.draw(canvas)
-        modeSwitch.draw(canvas)
+        flipCamera.draw(canvas)
         lastMediaThumbnail.draw(canvas)
+        modeSwitch.draw(canvas)
         shutter.draw(canvas)
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        // 分发顺序：分辨率(面板优先) → 设置 → 翻转 → 闪光 → 计时器 → 曝光
-        // → 模式 → 缩略图 → 快门。先命中者消费，其余不再派发。
+        // 分发顺序：分辨率(面板优先) → 计时器 → 设置 → 闪光 → 翻转
+        // → 曝光 → 模式 → 缩略图 → 快门。先命中者消费，其余不再派发。
+        // zoomStrip 占位不消费事件。
         if (resolutionButton.checkTouchEvent(event) ||
-            settingsButton.checkTouchEvent(event) ||
-            flipCamera.checkTouchEvent(event) ||
-            flashButton.checkTouchEvent(event) ||
             timerPanel.checkTouchEvent(event) ||
+            settingsButton.checkTouchEvent(event) ||
+            flashButton.checkTouchEvent(event) ||
+            flipCamera.checkTouchEvent(event) ||
             exposureSlider.checkTouchEvent(event) ||
             modeSwitch.checkTouchEvent(event) ||
             lastMediaThumbnail.checkTouchEvent(event) ||
