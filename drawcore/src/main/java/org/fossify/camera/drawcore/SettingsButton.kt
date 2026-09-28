@@ -3,18 +3,19 @@ package org.fossify.camera.drawcore
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.view.MotionEvent
 import android.view.View
+import androidx.core.graphics.PathParser
 import kotlin.math.min
-import kotlin.math.cos
-import kotlin.math.sin
 
 /**
  * 设置入口图标按钮（非 View 自绘助手，
  * 参照 FlashButton 范式）。
  *
- * 视觉：半透明白圆底 + 自绘齿轮图标
- * （Paint 实心圆 + 圆周 8 根粗齿条），
+ * 视觉：半透明白圆底 + TG 设置齿轮图标
+ * （pathData 取自 filled_profile_settings.xml，
+ * evenOdd 镂空中心孔），
  * 按下圆底由 0x40FFFFFF 提亮到 0x99FFFFFF。
  */
 class SettingsButton(private val parent: View) {
@@ -25,6 +26,11 @@ class SettingsButton(private val parent: View) {
 
     private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val gearPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+    /** TG 齿轮 Path（viewport 72×72，EVEN_ODD 镂空内孔）。 */
+    private val gearPath = PathParser
+        .createPathFromPathData(TG_GEAR_PATH_DATA)
+        .apply { fillType = Path.FillType.EVEN_ODD }
 
     fun setBounds(left: Float, top: Float,
                   right: Float, bottom: Float) {
@@ -49,25 +55,17 @@ class SettingsButton(private val parent: View) {
         }
         canvas.drawCircle(cx, cy, radius, bgPaint)
 
-        // 2) 齿轮：实心圆 + 圆周 8 根粗齿条
+        // 2) 齿轮：TG pathData 缩放绘制（viewport 72×72）
         gearPaint.style = Paint.Style.FILL
         gearPaint.color = Color.WHITE
-        val innerR = radius * 0.42f
-        canvas.drawCircle(cx, cy, innerR, gearPaint)
-
-        gearPaint.style = Paint.Style.STROKE
-        gearPaint.strokeCap = Paint.Cap.ROUND
-        val toothW = radius * 0.28f
-        gearPaint.strokeWidth = radius * 0.16f
-        val teeth = 8
-        for (i in 0 until teeth) {
-            val a = (Math.PI * 2 * i / teeth).toFloat()
-            val x1 = cx + cos(a) * innerR * 0.8f
-            val y1 = cy + sin(a) * innerR * 0.8f
-            val x2 = cx + cos(a) * (innerR + toothW)
-            val y2 = cy + sin(a) * (innerR + toothW)
-            canvas.drawLine(x1, y1, x2, y2, gearPaint)
-        }
+        val iconSize = rect.width() * 0.70f   // viewport 全宽 → 按钮 70%
+        val scale = iconSize / 72f
+        canvas.save()
+        canvas.translate(cx, cy)
+        canvas.scale(scale, scale)
+        canvas.translate(-36f, -36f)          // viewport 中心对齐按钮圆心
+        canvas.drawPath(gearPath, gearPaint)
+        canvas.restore()
     }
 
     fun checkTouchEvent(event: MotionEvent): Boolean {
@@ -103,3 +101,68 @@ class SettingsButton(private val parent: View) {
         return dx * dx + dy * dy <= r * r
     }
 }
+
+/** TG 设置齿轮 pathData（源：filled_profile_settings.xml）。 */
+private const val TG_GEAR_PATH_DATA =
+    "M38.3560404,6 C41.3155954,6 43.8310718,8.14960039 " +
+    "44.2749348,11.0583316 L45.2698155,13.8700514 " +
+    "C45.4349016,14.3366158 45.7675347,14.7244842 " +
+    "46.2025549,14.9576769 L49.2318977,16.5848042 " +
+    "C49.6979801,16.8344643 50.2441322,16.8866594 " +
+    "50.7487554,16.7297683 C51.5696516,16.4748688 " +
+    "52.3262413,16.2125932 53.0187175,15.9435678 " +
+    "C55.7743146,14.8715583 58.9042794,15.9620486 " +
+    "60.384013,18.5094033 L63.1975994,23.3537819 " +
+    "C64.6202027,25.8030483 64.1121948,28.9092839 " +
+    "61.9829064,30.7850548 L59.1746312,33.687659 " +
+    "C58.7968988,34.0780793 58.5952221,34.606992 " +
+    "58.6167031,35.1508691 L58.6922671,37.0624172 " +
+    "C58.7116951,37.544244 58.9049774,38.0025343 " +
+    "59.2360795,38.3518472 L61.3989658,40.6192591 " +
+    "C61.584181,40.8113482 61.7339953,40.9654992 " +
+    "61.8484246,41.0816969 L62.0714099,41.3031935 " +
+    "C64.0815437,43.1972762 64.5216815,46.2148453 " +
+    "63.1359151,48.5987011 L60.2297004,53.6025654 " +
+    "C58.7451588,56.1550306 55.6043176,57.24214 " +
+    "52.8459993,56.1583859 L49.9773067,55.3399544 " +
+    "C49.3653374,55.165361 48.7070843,55.2968194 " +
+    "48.2082357,55.6932521 L45.8755872,57.5459971 " +
+    "C45.641227,57.7327944 45.4521076,57.970521 " +
+    "45.322456,58.2412934 C44.8150146,59.3017252 " +
+    "44.4111495,60.4060955 44.1097584,61.5538723 " +
+    "C43.4204338,64.1737977 41.0389585,66.0011427 " +
+    "38.3147512,66 L32.7534943,66 " +
+    "C30.181934,65.9987131 27.9173177,64.162776 " +
+    "27.0807779,61.9413858 C26.6096796,60.6904076 " +
+    "26.1370513,59.4438099 25.6628929,58.2015926 " +
+    "C25.4944782,57.7615315 25.1753929,57.3962125 " +
+    "24.7630356,57.1707596 L22.2357859,55.790582 " +
+    "C21.8627771,55.5879068 21.4347845,55.5109165 " +
+    "21.0148964,55.5709599 C19.9543474,55.7243118 " +
+    "19.0282936,55.9328422 18.2367491,56.196651 " +
+    "L17.9462251,56.2981707 C15.211262,57.2988676 " +
+    "12.1486561,56.196641 10.6922722,53.6872586 " +
+    "L7.80149554,48.7099752 C6.38561766,46.2707223 " +
+    "6.88358601,43.1788397 8.99536031,41.3015808 " +
+    "L11.5481859,38.6145805 C11.899306,38.2450058 " +
+    "12.0951975,37.7538658 12.0951975,37.2431104 " +
+    "L12.0951972,34.4195897 C12.0954587,33.8835702 " +
+    "11.8800157,33.3701821 11.4977801,32.9959795 " +
+    "C10.6927316,32.2072523 9.9650364,31.5582719 " +
+    "9.31540716,31.0483042 C6.98370542,29.2181104 " +
+    "6.35549967,25.9648194 7.83938896,23.4062523 " +
+    "L10.7224465,18.4422594 C12.1097718,16.0555751 " +
+    "14.9643077,14.9283246 17.6210409,15.7178815 " +
+    "L20.9273636,16.4148941 C21.4052478,16.5156378 " +
+    "21.9033559,16.4354267 22.3258944,16.1896867 " +
+    "L24.4790421,14.9374582 C24.8603974,14.7156695 " +
+    "25.1571056,14.3724136 25.3221269,13.9621099 " +
+    "L26.7032591,10.5281075 C27.3614609,7.87006022 " +
+    "29.7590138,6.00143877 32.5127349,6 L38.3560404,6 " +
+    "Z M35.5,27.2307689 C30.4225434,27.2307689 " +
+    "26.3064516,31.3635249 26.3064516,36.4615379 " +
+    "C26.3064516,41.5595509 30.4225434,45.692307 " +
+    "35.5,45.692307 C40.5774566,45.692307 " +
+    "44.6935484,41.5595509 44.6935484,36.4615379 " +
+    "C44.6935484,31.3635249 40.5774566,27.2307689 " +
+    "35.5,27.2307689 Z"
