@@ -32,6 +32,9 @@ class DrawView(context: Context) : View(context) {
         fun onSettingsClick()
         fun onResolutionClick()
         fun onResolutionSelected(index: Int)
+
+        /** 变焦档位点击（index 为 ZoomStrip.RATIOS 下标）。 */
+        fun onZoomSelected(index: Int)
     }
 
     var listener: Listener? = null
@@ -88,6 +91,10 @@ class DrawView(context: Context) : View(context) {
         }
         resolutionButton.setOnResolutionSelectedListener { index ->
             listener?.onResolutionSelected(index)
+        }
+        zoomStrip.setOnZoomSelectedListener { index ->
+            uiState.zoomIndex = index
+            listener?.onZoomSelected(index)
         }
     }
 
@@ -199,6 +206,8 @@ class DrawView(context: Context) : View(context) {
         // 每帧从 uiState 拉状态进组件（onDraw 只读字段，不改 uiState）。
         exposureSlider.setRange(uiState.exposureRange)
         exposureSlider.setValue(uiState.exposureValue)
+        zoomStrip.setRange(uiState.zoomRange)
+        zoomStrip.setSelectedIndex(uiState.zoomIndex)
         modeSwitch.setPhotoMode(uiState.isPhoto)
         shutter.updateState(uiState.isPhoto, uiState.isRecording)
         flipCamera.setVisible(uiState.hasFrontAndBack)
@@ -225,14 +234,15 @@ class DrawView(context: Context) : View(context) {
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         // 分发顺序：分辨率(面板优先) → 计时器 → 设置 → 闪光 → 翻转
-        // → 曝光 → 模式 → 缩略图 → 快门。先命中者消费，其余不再派发。
-        // zoomStrip 占位不消费事件。
+        // → 曝光 → zoom 条 → 模式 → 缩略图 → 快门。先命中者消费，
+        // 其余不再派发。zoom 条多指/置灰档不消费，放行捏合。
         if (resolutionButton.checkTouchEvent(event) ||
             timerPanel.checkTouchEvent(event) ||
             settingsButton.checkTouchEvent(event) ||
             flashButton.checkTouchEvent(event) ||
             flipCamera.checkTouchEvent(event) ||
             exposureSlider.checkTouchEvent(event) ||
+            zoomStrip.checkTouchEvent(event) ||
             modeSwitch.checkTouchEvent(event) ||
             lastMediaThumbnail.checkTouchEvent(event) ||
             shutter.checkTouchEvent(event)

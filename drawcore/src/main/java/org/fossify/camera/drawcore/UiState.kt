@@ -35,6 +35,13 @@ class UiState {
     /** 录像已录时长（纳秒）；≤0 时隐藏计时文本（驱动 RecordingTimer） */
     var recordingDuration = 0L
 
+    /** 相机变焦范围；null=不支持（zoom 条隐藏，docs/10）。
+     *  用 ClosedFloatingPointRange（FloatRange 本 Kotlin 版本不可解析）。 */
+    var zoomRange: ClosedFloatingPointRange<Float>? = null
+
+    /** 当前选中档下标（0..3，驱动 ZoomStrip 高亮） */
+    var zoomIndex = 1
+
     /** TimerMode.ordinal：0=关 1=3s 2=5s 3=10s（驱动 TimerPanel 选中态） */
     var timerMode = 0
 }

@@ -21,6 +21,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import org.fossify.camera.BuildConfig
 import org.fossify.camera.R
 import org.fossify.camera.drawcore.DrawView
+import org.fossify.camera.drawcore.ZoomStrip
 import org.fossify.camera.extensions.config
 import org.fossify.camera.helpers.MediaSoundHelper
 import org.fossify.camera.helpers.PhotoProcessor
@@ -31,6 +32,7 @@ import org.fossify.camera.models.ResolutionOption
 import org.fossify.camera.models.TimerMode
 import org.fossify.commons.extensions.*
 import org.fossify.commons.helpers.*
+import kotlin.math.abs
 
 /**
  * 阶段1：UI 剥离后的精简宿主。
@@ -201,6 +203,8 @@ class MainActivity : SimpleActivity(), PhotoProcessor.MediaSavedListener,
             initInPhotoMode = isInPhotoMode,
         )
         drawView.uiState.exposureRange = mPreview?.getExposureRange()
+        // zoom 档位范围：相机未开时为 null（条隐藏），OPEN 后刷新。
+        drawView.uiState.zoomRange = mPreview?.getZoomRange()
         // 面板初始选中态：从 config 同步当前 TimerMode.ordinal。
         drawView.uiState.timerMode = config.timerMode.ordinal
         drawView.invalidate()
@@ -220,6 +224,13 @@ class MainActivity : SimpleActivity(), PhotoProcessor.MediaSavedListener,
     override fun setHasFrontAndBackCamera(hasFrontAndBack: Boolean) {
         mDrawView?.uiState?.hasFrontAndBack = hasFrontAndBack
         mDrawView?.invalidate()
+    }
+    override fun setCameraAvailable(available: Boolean) {
+        // 相机 OPEN 后刷新变焦范围；前后摄/模式/分辨率重绑后也走这里。
+        if (available) {
+            mDrawView?.uiState?.zoomRange = mPreview?.getZoomRange()
+            mDrawView?.invalidate()
+        }
     }
     override fun setFlashAvailable(available: Boolean) {}
     override fun shutterAnimation() {
@@ -249,6 +260,18 @@ class MainActivity : SimpleActivity(), PhotoProcessor.MediaSavedListener,
     }
     override fun onFocusCamera(xPos: Float, yPos: Float) {}
     override fun onTouchPreview() {}
+
+    override fun onZoomChanged(zoomRatio: Float) {
+        // 档位点击/捏合/重绑后，高亮吸附到最近档（docs/10 §10.4.5）。
+        val ratios = ZoomStrip.RATIOS
+        val nearest = ratios.indices.minByOrNull {
+            abs(ratios[it] - zoomRatio)
+        } ?: return
+        if (mDrawView?.uiState?.zoomIndex != nearest) {
+            mDrawView?.uiState?.zoomIndex = nearest
+            mDrawView?.invalidate()
+        }
+    }
     override fun displaySelectedResolution(resolutionOption: ResolutionOption) {}
     override fun showImageSizes(
         selectedResolution: ResolutionOption,
@@ -347,6 +370,11 @@ class MainActivity : SimpleActivity(), PhotoProcessor.MediaSavedListener,
         val fullIndex = pendingResolutions.getOrNull(index)?.fullListIndex
             ?.takeIf { it >= 0 } ?: index
         onSelect(fullIndex, changed)
+    }
+
+    override fun onZoomSelected(index: Int) {
+        // 点击档位 → 设置倍率；超范围档已在 ZoomStrip 置灰不可点。
+        mPreview?.setZoomRatio(ZoomStrip.RATIOS.getOrNull(index) ?: return)
     }
 
     // ===== 最近媒体缩略图数据流 =====

@@ -22,6 +22,9 @@ interface CameraXPreviewListener {
     fun onVideoDurationChanged(durationNanos: Long)
     fun onFocusCamera(xPos: Float, yPos: Float)
     fun onTouchPreview()
+
+    /** 变焦变化（档位点击/捏合/相机重绑），供 UiState 高亮同步。 */
+    fun onZoomChanged(zoomRatio: Float) {}
     fun displaySelectedResolution(resolutionOption: ResolutionOption)
     fun showImageSizes(
         selectedResolution: ResolutionOption,

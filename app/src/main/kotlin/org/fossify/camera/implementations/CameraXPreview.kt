@@ -365,6 +365,11 @@ class CameraXPreview(
                 cameraErrorHandler.handleCameraError(cameraState.error)
             }
         }
+
+        // 变焦观察：档位点击/捏合/相机重绑后同步 UI 高亮（docs/10）。
+        camera?.cameraInfo?.zoomState?.observe(activity) { state ->
+            listener.onZoomChanged(state.zoomRatio)
+        }
     }
 
     private fun hasBackCamera(): Boolean {
@@ -479,6 +484,17 @@ class CameraXPreview(
 
     override fun setExposure(index: Int) {
         camera?.cameraControl?.setExposureCompensationIndex(index)
+    }
+
+    override fun getZoomRange(): ClosedFloatingPointRange<Float>? {
+        val zoomState = camera?.cameraInfo?.zoomState?.value ?: return null
+        return zoomState.minZoomRatio..zoomState.maxZoomRatio
+    }
+
+    override fun setZoomRatio(ratio: Float) {
+        val zoomState = camera?.cameraInfo?.zoomState?.value ?: return
+        val clamped = ratio.coerceIn(zoomState.minZoomRatio, zoomState.maxZoomRatio)
+        camera?.cameraControl?.setZoomRatio(clamped)
     }
 
     override fun showChangeResolution() {
