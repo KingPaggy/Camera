@@ -482,27 +482,71 @@ class CameraXPreview(
     }
 
     override fun showChangeResolution() {
-        val selectedResolution = if (isPhotoCapture) {
-            imageQualityManager.getUserSelectedResolution(cameraSelector).toResolutionOption()
-        } else {
-            videoQualityManager.getUserSelectedQuality(cameraSelector).toResolutionOption()
+        if (isPhotoCapture) {
+            showPhotoRatioOptions()
+            return
         }
+        showVideoQualityOptions()
+    }
 
-        val resolutions = if (isPhotoCapture) {
-            imageQualityManager.getSupportedResolutions(cameraSelector)
-                .map { it.toResolutionOption() }
-        } else {
-            videoQualityManager.getSupportedQualities(cameraSelector)
-                .map { it.toResolutionOption() }
+    /**
+     * 拍照：按画幅比例 1:1 → 4:3 → 16:9 分组展示，每比例取该比例下
+     * 像素最大的分辨率；全屏档与某比例重复，不单列。
+     */
+    private fun showPhotoRatioOptions() {
+        val all = imageQualityManager.getSupportedResolutions(cameraSelector)
+        if (all.isEmpty()) return
+
+        val selected = imageQualityManager.getUserSelectedResolution(cameraSelector)
+        val selectedRatio = selected.getAspectRatio(activity)
+
+        val rows = mutableListOf<ResolutionOption>()
+        val ratioOrder = listOf("1:1", "4:3", "16:9")
+        for (ratio in ratioOrder) {
+            // 全量列表按像素降序 + 比例去重，同比例仅一项；跳过 Full 档。
+            val index = all.indexOfFirst {
+                !it.isFullScreen && it.getAspectRatio(activity) == ratio
+            }
+            if (index < 0) continue
+            rows += all[index].toResolutionOption().copy(
+                label = ratio,
+                fullListIndex = index,
+            )
         }
+        if (rows.size < 2) return  // 只有一个比例，无可切换。
+
+        listener.showImageSizes(
+            selectedResolution = rows.firstOrNull { it.label == selectedRatio } ?: rows.first(),
+            resolutions = rows,
+            isPhotoCapture = true,
+            isFrontCamera = isFrontCameraInUse()
+        ) { index, changed ->
+            // index 已是全量列表下标（MainActivity 已按 fullListIndex 转换）。
+            mediaSizeStore.storeSize(true, isFrontCameraInUse(), index)
+            if (changed) {
+                currentRecording?.stop()
+                startCamera()
+            }
+        }
+    }
+
+    /** 视频：保持 UHD/FHD/HD/SD 质量档，行号即质量列表下标。 */
+    private fun showVideoQualityOptions() {
+        val selectedResolution =
+            videoQualityManager.getUserSelectedQuality(cameraSelector).toResolutionOption()
+        val resolutions = videoQualityManager.getSupportedQualities(cameraSelector)
+            .mapIndexed { index, quality ->
+                quality.toResolutionOption().copy(fullListIndex = index)
+            }
 
         if (resolutions.size > 2) {
             listener.showImageSizes(
                 selectedResolution = selectedResolution,
                 resolutions = resolutions,
-                isPhotoCapture = isPhotoCapture,
+                isPhotoCapture = false,
                 isFrontCamera = isFrontCameraInUse()
             ) { index, changed ->
+                // index 已由 MainActivity 转为全量列表下标。
                 mediaSizeStore.storeSize(isPhotoCapture, isFrontCameraInUse(), index)
                 if (changed) {
                     currentRecording?.stop()

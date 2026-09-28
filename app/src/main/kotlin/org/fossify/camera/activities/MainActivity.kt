@@ -56,6 +56,8 @@ class MainActivity : SimpleActivity(), PhotoProcessor.MediaSavedListener,
     /** 分辨率面板 pending：CameraX showImageSizes 传入的选中回调与当前 index。 */
     private var pendingResolutionOnSelect: ((index: Int, changed: Boolean) -> Unit)? = null
     private var pendingSelectedIndex = -1
+    /** 面板当前行；行号 → 全量列表下标映射见 ResolutionOption.fullListIndex。 */
+    private var pendingResolutions: List<ResolutionOption> = emptyList()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         useDynamicTheme = false
@@ -262,6 +264,7 @@ class MainActivity : SimpleActivity(), PhotoProcessor.MediaSavedListener,
             .coerceAtLeast(0)
         pendingResolutionOnSelect = onSelect
         pendingSelectedIndex = selectedIndex
+        pendingResolutions = resolutions
         mDrawView?.let { d ->
             d.setResolutionLabels(labels, selectedIndex)
             d.openResolutionPanel()
@@ -289,6 +292,7 @@ class MainActivity : SimpleActivity(), PhotoProcessor.MediaSavedListener,
         // 模式切换收起分辨率面板，避免旧列表残留。
         mDrawView?.closeResolutionPanel()
         pendingResolutionOnSelect = null
+        pendingResolutions = emptyList()
         if (isPhoto) {
             mPreview?.initPhotoMode()
         } else {
@@ -334,11 +338,14 @@ class MainActivity : SimpleActivity(), PhotoProcessor.MediaSavedListener,
     }
 
     override fun onResolutionSelected(index: Int) {
-        // 面板选中：把 index 回传 CameraX，由其执行 storeSize + startCamera。
+        // 面板行号 → 全量列表下标（fullListIndex）再回传，MediaSizeStore
+        // 语义不变；changed 仍按行号比较（不同行即不同比例/质量档）。
         val onSelect = pendingResolutionOnSelect ?: return
         pendingResolutionOnSelect = null
         val changed = index != pendingSelectedIndex
-        onSelect(index, changed)
+        val fullIndex = pendingResolutions.getOrNull(index)?.fullListIndex
+            ?.takeIf { it >= 0 } ?: index
+        onSelect(fullIndex, changed)
     }
 
     // ===== 最近媒体缩略图数据流 =====
