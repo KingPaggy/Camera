@@ -1,94 +1,61 @@
 package org.fossify.camera.activities
 
-import android.animation.ObjectAnimator
-import android.annotation.SuppressLint
+import android.content.ContentUris
 import android.content.Intent
-import android.content.res.ColorStateList
 import android.graphics.Bitmap
-import android.hardware.SensorManager
 import android.net.Uri
 import android.os.Bundle
-import android.os.CountDownTimer
+import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore
-import android.view.*
-import android.widget.LinearLayout
-import androidx.constraintlayout.widget.ConstraintSet
-import androidx.core.content.ContextCompat
-import androidx.core.view.*
-import androidx.interpolator.view.animation.FastOutSlowInInterpolator
-import androidx.transition.*
-import com.bumptech.glide.Glide
-import com.bumptech.glide.load.engine.DiskCacheStrategy
-import com.bumptech.glide.load.resource.drawable.DrawableTransitionOptions
-import com.bumptech.glide.request.RequestOptions
-import com.google.android.material.button.MaterialButton
-import com.google.android.material.button.MaterialButtonToggleGroup
-import com.google.android.material.tabs.TabLayout
+import android.util.Log
+import android.util.Size
+import android.view.KeyEvent
+import android.view.Window
+import android.view.WindowManager
+import androidx.camera.view.PreviewView
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import org.fossify.camera.BuildConfig
 import org.fossify.camera.R
-import org.fossify.camera.databinding.ActivityMainBinding
+import org.fossify.camera.drawcore.DrawView
 import org.fossify.camera.extensions.config
-import org.fossify.camera.extensions.fadeIn
-import org.fossify.camera.extensions.fadeOut
-import org.fossify.camera.extensions.setShadowIcon
-import org.fossify.camera.extensions.toFlashModeId
-import org.fossify.camera.helpers.*
+import org.fossify.camera.helpers.MediaSoundHelper
+import org.fossify.camera.helpers.PhotoProcessor
 import org.fossify.camera.implementations.CameraXInitializer
 import org.fossify.camera.implementations.CameraXPreviewListener
 import org.fossify.camera.interfaces.MyPreview
 import org.fossify.camera.models.ResolutionOption
 import org.fossify.camera.models.TimerMode
-import org.fossify.camera.views.FocusCircleView
 import org.fossify.commons.extensions.*
 import org.fossify.commons.helpers.*
-import java.util.concurrent.TimeUnit
-import kotlin.math.abs
 
-class MainActivity : SimpleActivity(), PhotoProcessor.MediaSavedListener, CameraXPreviewListener {
-    private companion object {
-        private const val ANIMATION_DURATION = 500L
-        private const val PHOTO_MODE_INDEX = 1
-        private const val VIDEO_MODE_INDEX = 0
-        private const val MIN_SWIPE_DISTANCE_X = 100
-        private const val TIMER_2_SECONDS = 2001
-        private const val SWITCH_CAMERA_ROTATION_ANGLE = 180f
-    }
+/**
+ * 阶段1：UI 剥离后的精简宿主。
+ * 仅保留：权限请求、CameraX 预览创建、拍照/录像入口（物理快门/音量键）。
+ * 所有 View/XML UI 已移除，CameraXPreviewListener 回调留空，
+ * 待阶段3 由自绘 DrawingView Overlay 消费。
+ */
+class MainActivity : SimpleActivity(), PhotoProcessor.MediaSavedListener,
+    CameraXPreviewListener, DrawView.Listener {
 
-    private val binding by viewBinding(ActivityMainBinding::inflate)
-
-    private lateinit var defaultScene: Scene
-    private lateinit var flashModeScene: Scene
-    private lateinit var timerScene: Scene
-    private lateinit var mOrientationEventListener: OrientationEventListener
-    private lateinit var mFocusCircleView: FocusCircleView
     private lateinit var mediaSoundHelper: MediaSoundHelper
     private var mPreview: MyPreview? = null
-    private var mediaSizeToggleGroup: MaterialButtonToggleGroup? = null
-    private var mPreviewUri: Uri? = null
+    private var mDrawView: DrawView? = null
     private var mIsHardwareShutterHandled = false
-    private var mLastHandledOrientation = 0
-    private var countDownTimer: CountDownTimer? = null
-    private var mOriginalBrightness: Float? = null
 
-    private val tabSelectedListener = object : TabSelectedListener {
-        override fun onTabSelected(tab: TabLayout.Tab) {
-            handlePermission(PERMISSION_RECORD_AUDIO) {
-                if (it) {
-                    when (tab.position) {
-                        VIDEO_MODE_INDEX -> mPreview?.initVideoMode()
-                        PHOTO_MODE_INDEX -> mPreview?.initPhotoMode()
-                        else -> throw IllegalStateException("Unsupported tab position ${tab.position}")
-                    }
-                } else {
-                    toast(org.fossify.commons.R.string.no_audio_permissions)
-                    selectPhotoTab()
-                    if (isVideoCaptureIntent()) {
-                        finish()
-                    }
-                }
-            }
-        }
-    }
+    /** 主线程 Handler：照片模式定时拍摄延时到期后在此触发快门。 */
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    private val TAG = "CameraMainActivity"
+
+    /** 最近一条媒体的 content uri，供 onLastMediaClick 打开。 */
+    private var latestMediaUri: Uri? = null
+
+    /** 分辨率面板 pending：CameraX showImageSizes 传入的选中回调与当前 index。 */
+    private var pendingResolutionOnSelect: ((index: Int, changed: Boolean) -> Unit)? = null
+    private var pendingSelectedIndex = -1
 
     override fun onCreate(savedInstanceState: Bundle?) {
         useDynamicTheme = false
@@ -98,7 +65,6 @@ class MainActivity : SimpleActivity(), PhotoProcessor.MediaSavedListener, Camera
         initVariables()
         tryInitCamera()
         supportActionBar?.hide()
-        setupOrientationEventListener()
 
         val windowInsetsController = ViewCompat.getWindowInsetsController(window.decorView)
         windowInsetsController?.systemBarsBehavior =
@@ -120,35 +86,12 @@ class MainActivity : SimpleActivity(), PhotoProcessor.MediaSavedListener, Camera
 
     override fun onResume() {
         super.onResume()
-        if (hasStorageAndCameraPermissions()) {
-            val isInPhotoMode = isInPhotoMode()
-            setupPreviewImage(isInPhotoMode)
-            mFocusCircleView.setStrokeColor(getProperPrimaryColor())
-            toggleActionButtons(enabled = true)
-            mOrientationEventListener.enable()
-        }
-
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        mOriginalBrightness = window.updateBrightness(config.maxBrightness, mOriginalBrightness)
-        ensureTransparentNavigationBar()
-        if (ViewCompat.getWindowInsetsController(window.decorView) == null) {
-            window.decorView.systemUiVisibility =
-                View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-        }
     }
 
     override fun onPause() {
         super.onPause()
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        if (!isAskingPermissions) {
-            cancelTimer()
-        }
-
-        if (!hasStorageAndCameraPermissions() || isAskingPermissions) {
-            return
-        }
-
-        mOrientationEventListener.disable()
     }
 
     override fun onDestroy() {
@@ -157,55 +100,17 @@ class MainActivity : SimpleActivity(), PhotoProcessor.MediaSavedListener, Camera
         mediaSoundHelper.release()
     }
 
-    override fun onBackPressedCompat(): Boolean {
-        return if (!closeOptions()) {
-            false
-        } else {
-            true
-        }
-    }
-
-    private fun selectPhotoTab(triggerListener: Boolean = false) {
-        if (!triggerListener) {
-            removeTabListener()
-        }
-
-        binding.cameraModeTab.getTabAt(PHOTO_MODE_INDEX)?.select()
-        setTabListener()
-    }
-
-    private fun selectVideoTab(triggerListener: Boolean = false) {
-        if (!triggerListener) {
-            removeTabListener()
-        }
-        binding.cameraModeTab.getTabAt(VIDEO_MODE_INDEX)?.select()
-        setTabListener()
-    }
-
-    private fun setTabListener() {
-        binding.cameraModeTab.addOnTabSelectedListener(tabSelectedListener)
-    }
-
-    private fun removeTabListener() {
-        binding.cameraModeTab.removeOnTabSelectedListener(tabSelectedListener)
-    }
-
-    private fun ensureTransparentNavigationBar() {
-        window.navigationBarColor = ContextCompat.getColor(this, android.R.color.transparent)
-    }
-
     private fun initVariables() {
         mIsHardwareShutterHandled = false
         mediaSoundHelper = MediaSoundHelper(this)
         mediaSoundHelper.loadSounds()
     }
 
+    // 物理快门/音量键触发拍照或录像（阶段1 临时入口）
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
-        return if (keyCode == KeyEvent.KEYCODE_CAMERA && !mIsHardwareShutterHandled) {
-            mIsHardwareShutterHandled = true
-            shutterPressed()
-            true
-        } else if (!mIsHardwareShutterHandled && config.volumeButtonsAsShutter && (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN || keyCode == KeyEvent.KEYCODE_VOLUME_UP)) {
+        val isShutterKey = keyCode == KeyEvent.KEYCODE_CAMERA
+        val isVolumeShutter = keyCode == KeyEvent.KEYCODE_VOLUME_DOWN || keyCode == KeyEvent.KEYCODE_VOLUME_UP
+        return if ((isShutterKey || isVolumeShutter) && !mIsHardwareShutterHandled) {
             mIsHardwareShutterHandled = true
             shutterPressed()
             true
@@ -221,40 +126,37 @@ class MainActivity : SimpleActivity(), PhotoProcessor.MediaSavedListener, Camera
         return super.onKeyUp(keyCode, event)
     }
 
-    private fun hideIntentButtons() = binding.apply {
-        cameraModeHolder.beGone()
-        layoutTop.settings.beGone()
-        lastPhotoVideoPreview.beInvisible()
+    private fun shutterPressed() {
+        if (isInPhotoMode()) {
+            mPreview?.tryTakePicture()
+        } else {
+            mPreview?.toggleRecording()
+        }
     }
 
     private fun tryInitCamera() {
-        handlePermission(PERMISSION_CAMERA) { grantedCameraPermission ->
-            if (grantedCameraPermission) {
+        handlePermission(PERMISSION_CAMERA) { granted ->
+            if (granted) {
                 handleStoragePermission {
-                    val isInPhotoMode = isInPhotoMode()
-                    if (isInPhotoMode) {
-                        initializeCamera(true)
-                    } else {
-                        handlePermission(PERMISSION_RECORD_AUDIO) { grantedRecordAudioPermission ->
-                            if (grantedRecordAudioPermission) {
-                                initializeCamera(false)
-                            } else {
-                                toast(org.fossify.commons.R.string.no_audio_permissions)
-                                if (isThirdPartyIntent()) {
-                                    finish()
-                                } else {
-                                    // re-initialize in photo mode
-                                    config.initPhotoMode = true
-                                    tryInitCamera()
-                                }
-                            }
-                        }
-                    }
+                    initializeCamera(isInPhotoMode())
                 }
             } else {
                 toast(org.fossify.commons.R.string.no_camera_permissions)
                 finish()
             }
+        }
+    }
+
+    private fun handleStoragePermission(callback: (granted: Boolean) -> Unit) {
+        if (isTiramisuPlus()) {
+            val mediaPermissionIds =
+                mutableListOf(PERMISSION_READ_MEDIA_IMAGES, PERMISSION_READ_MEDIA_VIDEO)
+            if (isUpsideDownCakePlus()) {
+                mediaPermissionIds.add(PERMISSION_READ_MEDIA_VISUAL_USER_SELECTED)
+            }
+            handlePartialMediaPermissions(permissionIds = mediaPermissionIds, callback = callback)
+        } else {
+            handlePermission(PERMISSION_WRITE_STORAGE, callback)
         }
     }
 
@@ -268,476 +170,248 @@ class MainActivity : SimpleActivity(), PhotoProcessor.MediaSavedListener, Camera
         }
     }
 
-    private fun handleStoragePermission(callback: (granted: Boolean) -> Unit) {
-        if (isTiramisuPlus()) {
-            val mediaPermissionIds =
-                mutableListOf(PERMISSION_READ_MEDIA_IMAGES, PERMISSION_READ_MEDIA_VIDEO)
-            if (isUpsideDownCakePlus()) {
-                mediaPermissionIds.add(PERMISSION_READ_MEDIA_VISUAL_USER_SELECTED)
-            }
-
-            handlePartialMediaPermissions(permissionIds = mediaPermissionIds, callback = callback)
-        } else {
-            handlePermission(PERMISSION_WRITE_STORAGE, callback)
-        }
-    }
-
-    private fun isThirdPartyIntent() = isVideoCaptureIntent() || isImageCaptureIntent()
-
     private fun isImageCaptureIntent(): Boolean =
         intent?.action == MediaStore.ACTION_IMAGE_CAPTURE || intent?.action == MediaStore.ACTION_IMAGE_CAPTURE_SECURE
 
     private fun isVideoCaptureIntent(): Boolean = intent?.action == MediaStore.ACTION_VIDEO_CAPTURE
 
-    private fun createToggleGroup(): MaterialButtonToggleGroup {
-        return MaterialButtonToggleGroup(this).apply {
-            isSingleSelection = true
-            layoutParams = ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
-        }
-    }
-
     private fun initializeCamera(isInPhotoMode: Boolean) {
-        setContentView(binding.root)
-        initButtons()
-        initModeSwitcher()
-        binding.apply {
-            defaultScene = Scene(topOptions, layoutTop.defaultIcons)
-            flashModeScene = Scene(topOptions, layoutFlash.flashToggleGroup)
-            timerScene = Scene(topOptions, layoutTimer.timerToggleGroup)
+        setContentView(R.layout.activity_main)
+        val drawView = DrawView(this).apply { listener = this@MainActivity }
+        mDrawView = drawView
+        findViewById<android.widget.FrameLayout>(R.id.overlay_container).apply {
+            addView(drawView)
         }
+        val previewView = findViewById<PreviewView>(R.id.preview_view)
 
-        WindowCompat.setDecorFitsSystemWindows(window, false)
-        ViewCompat.setOnApplyWindowInsetsListener(binding.viewHolder) { _, windowInsets ->
-            val safeInsetBottom = windowInsets.displayCutout?.safeInsetBottom ?: 0
-            val safeInsetTop = windowInsets.displayCutout?.safeInsetTop ?: 0
-
-            binding.topOptions.updateLayoutParams<ViewGroup.MarginLayoutParams> {
-                topMargin = safeInsetTop
-            }
-
-            val systemBarsInsets = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars())
-            val marginBottom = systemBarsInsets.bottom +
-                    resources.getDimensionPixelSize(org.fossify.commons.R.dimen.bigger_margin)
-
-            binding.shutter.updateLayoutParams<ViewGroup.MarginLayoutParams> {
-                bottomMargin = marginBottom
-            }
-
-            WindowInsetsCompat.CONSUMED
-        }
-
-        if (isInPhotoMode) {
-            selectPhotoTab()
-        } else {
-            selectVideoTab()
-        }
-
-        val outputUri = intent.extras?.get(MediaStore.EXTRA_OUTPUT) as? Uri
-        val isThirdPartyIntent = isThirdPartyIntent()
         mPreview = CameraXInitializer(this).createCameraXPreview(
-            binding.previewView,
+            previewView,
             listener = this,
             mediaSoundHelper = mediaSoundHelper,
-            outputUri = outputUri,
-            isThirdPartyIntent = isThirdPartyIntent,
+            outputUri = intent.extras?.get(MediaStore.EXTRA_OUTPUT) as? Uri,
+            isThirdPartyIntent = isVideoCaptureIntent() || isImageCaptureIntent(),
             initInPhotoMode = isInPhotoMode,
         )
-
-        mFocusCircleView = FocusCircleView(this).apply {
-            id = View.generateViewId()
-        }
-        binding.viewHolder.addView(mFocusCircleView)
-
-        setupPreviewImage(true)
-        initFlashModeTransitionNames()
-        initTimerModeTransitionNames()
-
-        if (isThirdPartyIntent) {
-            hideIntentButtons()
-        }
+        drawView.uiState.exposureRange = mPreview?.getExposureRange()
+        // 面板初始选中态：从 config 同步当前 TimerMode.ordinal。
+        drawView.uiState.timerMode = config.timerMode.ordinal
+        drawView.invalidate()
+        updateLatestMediaThumbnail()
     }
 
-    private fun initFlashModeTransitionNames() = binding.layoutFlash.apply {
-        val baseName = getString(R.string.toggle_flash)
-        flashAuto.transitionName = "$baseName$FLASH_AUTO"
-        flashOff.transitionName = "$baseName$FLASH_OFF"
-        flashOn.transitionName = "$baseName$FLASH_ON"
-        flashAlwaysOn.transitionName = "$baseName$FLASH_ALWAYS_ON"
-    }
-
-    private fun initTimerModeTransitionNames() = binding.layoutTimer.apply {
-        val baseName = getString(R.string.toggle_timer)
-        timerOff.transitionName = "$baseName${TimerMode.OFF.name}"
-        timer3s.transitionName = "$baseName${TimerMode.TIMER_3.name}"
-        timer5s.transitionName = "$baseName${TimerMode.TIMER_5.name}"
-        timer10S.transitionName = "$baseName${TimerMode.TIMER_10.name}"
-    }
-
-    private fun initButtons() = binding.apply {
-        timerText.setFactory { layoutInflater.inflate(R.layout.timer_text, null) }
-        toggleCamera.setOnClickListener {
-            animateCameraToggle()
-            mPreview!!.toggleFrontBackCamera()
-        }
-
-        lastPhotoVideoPreview.setOnClickListener { showLastMediaPreview() }
-
-        layoutTop.apply {
-            toggleFlash.setOnClickListener { mPreview!!.handleFlashlightClick() }
-            toggleTimer.setOnClickListener {
-                val transitionSet = createTransition()
-                TransitionManager.go(timerScene, transitionSet)
-                layoutTimer.timerToggleGroup.beVisible()
-                layoutTimer.timerToggleGroup.check(config.timerMode.getTimerModeResId())
-                layoutTimer.timerToggleGroup.children.forEach { setButtonColors(it as MaterialButton) }
-            }
-
-            settings.setShadowIcon(R.drawable.ic_settings_vector)
-            settings.setOnClickListener { launchSettings() }
-            changeResolution.setOnClickListener { mPreview?.showChangeResolution() }
-        }
-
-        shutter.setOnClickListener { shutterPressed() }
-
-        layoutFlash.apply {
-            flashOn.setShadowIcon(R.drawable.ic_flash_on_vector)
-            flashOn.setOnClickListener { selectFlashMode(FLASH_ON) }
-
-            flashOff.setShadowIcon(R.drawable.ic_flash_off_vector)
-            flashOff.setOnClickListener { selectFlashMode(FLASH_OFF) }
-
-            flashAuto.setShadowIcon(R.drawable.ic_flash_auto_vector)
-            flashAuto.setOnClickListener { selectFlashMode(FLASH_AUTO) }
-
-            flashAlwaysOn.setShadowIcon(R.drawable.ic_flashlight_vector)
-            flashAlwaysOn.setOnClickListener { selectFlashMode(FLASH_ALWAYS_ON) }
-        }
-
-        layoutTimer.apply {
-            timerOff.setShadowIcon(R.drawable.ic_timer_off_vector)
-            timerOff.setOnClickListener { selectTimerMode(TimerMode.OFF) }
-
-            timer3s.setShadowIcon(R.drawable.ic_timer_3_vector)
-            timer3s.setOnClickListener { selectTimerMode(TimerMode.TIMER_3) }
-
-            timer5s.setShadowIcon(R.drawable.ic_timer_5_vector)
-            timer5s.setOnClickListener { selectTimerMode(TimerMode.TIMER_5) }
-
-            timer10S.setShadowIcon(R.drawable.ic_timer_10_vector)
-            timer10S.setOnClickListener { selectTimerMode(TimerMode.TIMER_10) }
-        }
-
-        setTimerModeIcon(config.timerMode)
-    }
-
-    private fun animateCameraToggle() {
-        ObjectAnimator.ofFloat(binding.toggleCamera, "rotation", 0f, SWITCH_CAMERA_ROTATION_ANGLE)
-            .apply {
-                duration = ANIMATION_DURATION
-                interpolator = FastOutSlowInInterpolator()
-                start()
-            }
-    }
-
-    private fun selectTimerMode(timerMode: TimerMode) {
-        config.timerMode = timerMode
-        setTimerModeIcon(timerMode)
-        closeOptions()
-    }
-
-    private fun setTimerModeIcon(timerMode: TimerMode) = binding.layoutTop.toggleTimer.apply {
-        setShadowIcon(timerMode.getTimerModeDrawableRes())
-        transitionName = "${getString(R.string.toggle_timer)}${timerMode.name}"
-    }
-
-    @SuppressLint("ClickableViewAccessibility")
-    private fun initModeSwitcher() {
-        val gestureDetector = GestureDetectorCompat(this, object : GestureDetectorListener() {
-            override fun onDown(e: MotionEvent): Boolean {
-                // we have to return true here so ACTION_UP (and onFling) can be dispatched
-                return true
-            }
-
-            override fun onFling(
-                event1: MotionEvent?,
-                event2: MotionEvent?,
-                velocityX: Float,
-                velocityY: Float
-            ): Boolean {
-                if (event1 == null || event2 == null) {
-                    return true
-                }
-
-                val deltaX = event1.x - event2.x
-                val deltaXAbs = abs(deltaX)
-
-                if (deltaXAbs >= MIN_SWIPE_DISTANCE_X) {
-                    if (deltaX > 0) {
-                        onSwipeLeft()
-                    } else {
-                        onSwipeRight()
-                    }
-                }
-
-                return true
-            }
-        })
-
-        binding.cameraModeTab.setOnTouchListener { _, event ->
-            gestureDetector.onTouchEvent(event)
-        }
-    }
-
-    private fun onSwipeLeft() {
-        if (!isThirdPartyIntent() && binding.cameraModeHolder.isVisible()) {
-            selectPhotoTab(triggerListener = true)
-        }
-    }
-
-    private fun onSwipeRight() {
-        if (!isThirdPartyIntent() && binding.cameraModeHolder.isVisible()) {
-            selectVideoTab(triggerListener = true)
-        }
-    }
-
-    private fun selectFlashMode(flashMode: Int) {
-        closeOptions()
-        mPreview?.setFlashlightState(flashMode)
-    }
-
-
-    private fun showLastMediaPreview() {
-        if (mPreviewUri != null) {
-            val path =
-                applicationContext.getRealPathFromURI(mPreviewUri!!) ?: mPreviewUri!!.toString()
-            openPathIntent(path, false, BuildConfig.APPLICATION_ID)
-        }
-    }
-
-    private fun shutterPressed() {
-        if (countDownTimer != null) {
-            cancelTimer()
-        } else if (isInPhotoMode()) {
-            val timerMode = config.timerMode
-            if (timerMode == TimerMode.OFF) {
-                mPreview?.tryTakePicture()
-            } else {
-                scheduleTimer(timerMode)
-            }
-        } else {
-            mPreview?.toggleRecording()
-        }
-    }
-
-    private fun cancelTimer() {
-        mediaSoundHelper.stopTimerCountdown2SecondsSound()
-        countDownTimer?.cancel()
-        countDownTimer = null
-        resetViewsOnTimerFinish()
-    }
-
-    private fun launchSettings() {
-        val intent = Intent(applicationContext, SettingsActivity::class.java)
-        startActivity(intent)
-    }
-
+    // ===== CameraXPreviewListener：UI 相关回调留空，待阶段3 自绘层消费 =====
     override fun onInitPhotoMode() {
-        binding.apply {
-            shutter.setImageResource(R.drawable.ic_shutter_animated)
-            layoutTop.toggleTimer.beVisible()
-            layoutTop.toggleTimer.fadeIn()
-        }
-        closeOptions()
-        setupPreviewImage(true)
-        selectPhotoTab()
+        mDrawView?.uiState?.isPhoto = true
+        mDrawView?.invalidate()
     }
 
     override fun onInitVideoMode() {
-        binding.apply {
-            shutter.setImageResource(R.drawable.ic_video_rec_animated)
-            layoutTop.toggleTimer.fadeOut()
-            layoutTop.toggleTimer.beGone()
-        }
-        closeOptions()
-        setupPreviewImage(false)
-        selectVideoTab()
+        mDrawView?.uiState?.isPhoto = false
+        mDrawView?.invalidate()
     }
-
-    private fun setupPreviewImage(isPhoto: Boolean) {
-        val uri =
-            if (isPhoto) MediaStore.Images.Media.EXTERNAL_CONTENT_URI else MediaStore.Video.Media.EXTERNAL_CONTENT_URI
-        val lastMediaId = getLatestMediaId(uri)
-        if (lastMediaId == 0L) {
-            return
-        }
-
-        mPreviewUri = Uri.withAppendedPath(uri, lastMediaId.toString())
-
-        loadLastTakenMedia(mPreviewUri)
-    }
-
-    private fun loadLastTakenMedia(uri: Uri?) {
-        mPreviewUri = uri
-        runOnUiThread {
-            if (!isDestroyed) {
-                val options = RequestOptions()
-                    .circleCrop()
-                    .diskCacheStrategy(DiskCacheStrategy.NONE)
-
-                Glide.with(this)
-                    .load(uri)
-                    .apply(options)
-                    .transition(DrawableTransitionOptions.withCrossFade())
-                    .into(binding.lastPhotoVideoPreview)
-            }
-        }
-    }
-
-    private fun hasStorageAndCameraPermissions(): Boolean {
-        return if (isInPhotoMode()) hasPhotoModePermissions() else hasVideoModePermissions()
-    }
-
-    private fun hasPhotoModePermissions(): Boolean {
-        return if (isTiramisuPlus()) {
-            var hasMediaPermission = hasPermission(PERMISSION_READ_MEDIA_IMAGES) || hasPermission(
-                PERMISSION_READ_MEDIA_VIDEO
-            )
-            if (isUpsideDownCakePlus()) {
-                hasMediaPermission =
-                    hasMediaPermission || hasPermission(PERMISSION_READ_MEDIA_VISUAL_USER_SELECTED)
-            }
-            hasMediaPermission && hasPermission(PERMISSION_CAMERA)
-        } else {
-            hasPermission(PERMISSION_WRITE_STORAGE) && hasPermission(PERMISSION_CAMERA)
-        }
-    }
-
-    private fun hasVideoModePermissions(): Boolean {
-        return if (isTiramisuPlus()) {
-            var hasMediaPermission = hasPermission(PERMISSION_READ_MEDIA_VIDEO)
-            if (isUpsideDownCakePlus()) {
-                hasMediaPermission =
-                    hasMediaPermission || hasPermission(PERMISSION_READ_MEDIA_VISUAL_USER_SELECTED)
-            }
-            hasMediaPermission && hasPermission(PERMISSION_CAMERA) && hasPermission(
-                PERMISSION_RECORD_AUDIO
-            )
-        } else {
-            hasPermission(PERMISSION_WRITE_STORAGE) && hasPermission(PERMISSION_CAMERA) && hasPermission(
-                PERMISSION_RECORD_AUDIO
-            )
-        }
-    }
-
-    private fun setupOrientationEventListener() {
-        mOrientationEventListener = object : OrientationEventListener(
-            this, SensorManager.SENSOR_DELAY_NORMAL
-        ) {
-            override fun onOrientationChanged(orientation: Int) {
-                if (isDestroyed) {
-                    mOrientationEventListener.disable()
-                    return
-                }
-
-                val currOrient = when (orientation) {
-                    in 75..134 -> ORIENT_LANDSCAPE_RIGHT
-                    in 225..289 -> ORIENT_LANDSCAPE_LEFT
-                    else -> ORIENT_PORTRAIT
-                }
-
-                if (currOrient != mLastHandledOrientation) {
-                    val degrees = when (currOrient) {
-                        ORIENT_LANDSCAPE_LEFT -> 90
-                        ORIENT_LANDSCAPE_RIGHT -> -90
-                        else -> 0
-                    }
-
-                    animateViews(degrees)
-                    mLastHandledOrientation = currOrient
-                }
-            }
-        }
-    }
-
-    private fun animateViews(degrees: Int) = binding.apply {
-        val views = arrayOf(
-            toggleCamera,
-            layoutTop.toggleTimer,
-            layoutTop.toggleFlash,
-            layoutTop.changeResolution,
-            shutter,
-            layoutTop.settings,
-            lastPhotoVideoPreview,
-            layoutTimer.timerOff,
-            layoutTimer.timer3s,
-            layoutTimer.timer5s,
-            layoutTimer.timer10S,
-            layoutFlash.flashOff,
-            layoutFlash.flashAuto,
-            layoutFlash.flashOn,
-            layoutFlash.flashAlwaysOn
-        )
-        for (view in views) {
-            rotate(view, degrees)
-        }
-        mediaSizeToggleGroup?.children?.forEach { child ->
-            rotate(child, degrees)
-        }
-    }
-
-    private fun rotate(view: View, degrees: Int) =
-        view.animate().rotation(degrees.toFloat()).start()
-
     override fun setHasFrontAndBackCamera(hasFrontAndBack: Boolean) {
-        binding.toggleCamera.beVisibleIf(hasFrontAndBack)
+        mDrawView?.uiState?.hasFrontAndBack = hasFrontAndBack
+        mDrawView?.invalidate()
     }
-
-    override fun setFlashAvailable(available: Boolean) {
-        if (available) {
-            binding.layoutTop.toggleFlash.beVisible()
-        } else {
-            binding.layoutTop.toggleFlash.beGone()
-            mPreview?.setFlashlightState(FLASH_OFF)
-        }
-    }
-
-    override fun onPhotoCaptureStart() {
-        toggleActionButtons(enabled = false)
-    }
-
-    override fun onPhotoCaptureEnd() {
-        toggleActionButtons(enabled = true)
-    }
-
-    private fun toggleActionButtons(enabled: Boolean) = binding.apply {
-        runOnUiThread {
-            shutter.isClickable = enabled
-            previewView.isEnabled = enabled
-            layoutTop.changeResolution.isEnabled = enabled
-            toggleCamera.isClickable = enabled
-            layoutTop.toggleFlash.isClickable = enabled
-        }
-    }
-
+    override fun setFlashAvailable(available: Boolean) {}
     override fun shutterAnimation() {
-        binding.shutterAnimation.alpha = 1.0f
-        binding.shutterAnimation.animate().alpha(0f).setDuration(ANIMATION_DURATION).start()
+        mDrawView?.triggerShutterPulse()
+    }
+    override fun onChangeFlashMode(flashMode: Int) {
+        mDrawView?.uiState?.flashMode = flashMode
+        mDrawView?.invalidate()
+    }
+    override fun onPhotoCaptureStart() {}
+    override fun onPhotoCaptureEnd() {}
+    override fun onVideoRecordingStarted() {
+        mDrawView?.uiState?.isRecording = true
+        mDrawView?.invalidate()
     }
 
-    override fun onMediaSaved(uri: Uri) {
-        binding.layoutTop.changeResolution.isEnabled = true
-        loadLastTakenMedia(uri)
-        if (isImageCaptureIntent()) {
-            Intent().apply {
-                data = uri
-                flags = Intent.FLAG_GRANT_READ_URI_PERMISSION
-                setResult(RESULT_OK, this)
+    override fun onVideoRecordingStopped() {
+        mDrawView?.uiState?.isRecording = false
+        // 停止录像同时清零计时，隐藏计时文本。
+        mDrawView?.uiState?.recordingDuration = 0
+        mDrawView?.invalidate()
+    }
+
+    override fun onVideoDurationChanged(durationNanos: Long) {
+        mDrawView?.uiState?.recordingDuration = durationNanos
+        mDrawView?.invalidate()
+    }
+    override fun onFocusCamera(xPos: Float, yPos: Float) {}
+    override fun onTouchPreview() {}
+    override fun displaySelectedResolution(resolutionOption: ResolutionOption) {}
+    override fun showImageSizes(
+        selectedResolution: ResolutionOption,
+        resolutions: List<ResolutionOption>,
+        isPhotoCapture: Boolean,
+        isFrontCamera: Boolean,
+        onSelect: (index: Int, changed: Boolean) -> Unit,
+    ) {
+        // 复用 CameraX showChangeResolution 的取数逻辑；这里只把数据填入
+        // 自绘分辨率面板并展开（原 XML 弹窗改为自绘层）。
+        val labels = resolutions.map { it.label }
+        val selectedIndex = resolutions
+            .indexOfFirst { it.label == selectedResolution.label }
+            .coerceAtLeast(0)
+        pendingResolutionOnSelect = onSelect
+        pendingSelectedIndex = selectedIndex
+        mDrawView?.let { d ->
+            d.setResolutionLabels(labels, selectedIndex)
+            d.openResolutionPanel()
+        }
+    }
+
+    override fun showFlashOptions(photoCapture: Boolean) {}
+    override fun adjustPreviewView(requiresCentering: Boolean) {}
+
+    // ===== DrawView.Listener：自绘层 Overlay 回调桥接 =====
+    override fun onShutterClick() {
+        // 延时仅作用于照片模式：定时 > 0 时延迟到期后才真正拍照；
+        // 录像模式直接启停，不做延时。tryTakePicture 本身无延时逻辑，延时
+        // 在此桥接层用 mainHandler.postDelayed 实现。
+        if (isInPhotoMode() && config.timerMode != TimerMode.OFF) {
+            mainHandler.postDelayed({
+                mPreview?.tryTakePicture()
+            }, config.timerMode.millisInFuture)
+        } else {
+            shutterPressed()
+        }
+    }
+
+    override fun onModeChanged(isPhoto: Boolean) {
+        // 模式切换收起分辨率面板，避免旧列表残留。
+        mDrawView?.closeResolutionPanel()
+        pendingResolutionOnSelect = null
+        if (isPhoto) {
+            mPreview?.initPhotoMode()
+        } else {
+            mPreview?.initVideoMode()
+        }
+        config.initPhotoMode = isPhoto
+    }
+
+    override fun onExposureChanged(value: Int) {
+        mPreview?.setExposure(value)
+    }
+
+    override fun onFlipCamera() {
+        mPreview?.toggleFrontBackCamera()
+    }
+
+    override fun onFlashClick() {
+        // OFF(0) → ON(1) → AUTO(2) → ALWAYS_ON(3) → OFF；
+        // setFlashlightState 内部会回调 onChangeFlashMode 驱动图标刷新。
+        val next = (config.flashlightState + 1) % 4
+        mPreview?.setFlashlightState(next)
+    }
+
+    override fun onLastMediaClick() {
+        openLatestMedia()
+    }
+
+    override fun onTimerSelected(mode: Int) {
+        // DrawView 已把 uiState.timerMode 回写；这里持久化到 config，
+        // mode 即 TimerMode.ordinal（0=关 1=3s 2=5s 3=10s）。
+        config.timerMode = TimerMode.entries[mode]
+    }
+
+    override fun onSettingsClick() {
+        // 设置入口：保留 XML 的 SettingsActivity，直接启动。
+        startActivity(Intent(this, SettingsActivity::class.java))
+    }
+
+    override fun onResolutionClick() {
+        // 复用 CameraX showChangeResolution 的取数 + 应用逻辑：
+        // 内部取当前/支持分辨率列表后回调 showImageSizes 弹自绘面板。
+        mPreview?.showChangeResolution()
+    }
+
+    override fun onResolutionSelected(index: Int) {
+        // 面板选中：把 index 回传 CameraX，由其执行 storeSize + startCamera。
+        val onSelect = pendingResolutionOnSelect ?: return
+        pendingResolutionOnSelect = null
+        val changed = index != pendingSelectedIndex
+        onSelect(index, changed)
+    }
+
+    // ===== 最近媒体缩略图数据流 =====
+
+    /**
+     * 后台查询 MediaStore 最近一条图片/视频，加载 156x156 缩略图，
+     * 回主线程写入 uiState.lastMediaBitmap 并缓存其 content uri。
+     * 无结果或失败时置 null（缩略图组件自行隐藏）。
+     */
+    private fun updateLatestMediaThumbnail() {
+        Thread {
+            var uri: Uri? = null
+            var bitmap: Bitmap? = null
+            try {
+                // 双表直查：原 Files 聚合表在本 ROM 返回空，改为
+                // 图片、视频各取最新一条，比较日期取较新者。
+                val images = queryLatest(MediaStore.Images.Media.EXTERNAL_CONTENT_URI)
+                val videos = queryLatest(MediaStore.Video.Media.EXTERNAL_CONTENT_URI)
+                val best = listOfNotNull(images, videos).maxByOrNull { it.first }
+                if (best != null) {
+                    uri = best.second
+                    bitmap = contentResolver.loadThumbnail(
+                        uri!!, Size(156, 156), null,
+                    )
+                }
+                Log.d(TAG, "最近媒体: uri=${uri ?: "null"} loaded=${bitmap != null}")
+            } catch (t: Throwable) {
+                Log.w(TAG, "缩略图加载失败: ${t.message}", t)
+                bitmap = null
             }
-            finish()
-        } else if (isVideoCaptureIntent()) {
+            runOnUiThread {
+                latestMediaUri = uri
+                mDrawView?.uiState?.lastMediaBitmap = bitmap
+                mDrawView?.invalidate()
+            }
+        }.start()
+    }
+
+    /** 查询某媒体表最新一条：返回 (dateAdded, contentUri)；无数据返回 null。 */
+    private fun queryLatest(baseUri: Uri): Pair<Long, Uri>? {
+        var best: Pair<Long, Uri>? = null
+        contentResolver.query(
+            baseUri,
+            arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DATE_ADDED),
+            null, null,
+            // 注意：本 ROM 的 sortOrder 不支持 "LIMIT 1"（抛异常），
+            // 倒序查询后只取第一条即可。
+            "${MediaStore.MediaColumns.DATE_ADDED} DESC",
+        )?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val id = cursor.getLong(
+                    cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID),
+                )
+                val date = cursor.getLong(
+                    cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_ADDED),
+                )
+                best = date to ContentUris.withAppendedId(baseUri, id)
+            }
+        }
+        return best
+    }
+
+    /** 打开系统相册/图库查看最近媒体（与原版 Fossify 一致：content uri
+     *  先转文件路径，再 openPathIntent——OPPO 相册只认文件路径）。 */
+    private fun openLatestMedia() {
+        val uri = latestMediaUri ?: return
+        val path = applicationContext.getRealPathFromURI(uri) ?: uri.toString()
+        try {
+            openPathIntent(path, false, BuildConfig.APPLICATION_ID)
+        } catch (e: Exception) {
+            Log.e(TAG, "openPathIntent 失败: ${e.message}")
+        }
+    }
+
+    // 第三方调用（如系统相机 Intent）：保存后返回结果
+    override fun onMediaSaved(uri: Uri) {
+        updateLatestMediaThumbnail()
+        if (isImageCaptureIntent() || isVideoCaptureIntent()) {
             Intent().apply {
                 data = uri
                 flags = Intent.FLAG_GRANT_READ_URI_PERMISSION
@@ -757,276 +431,11 @@ class MainActivity : SimpleActivity(), PhotoProcessor.MediaSavedListener, Camera
         }
     }
 
-    override fun onChangeFlashMode(flashMode: Int) {
-        binding.layoutTop.apply {
-            val flashDrawable = when (flashMode) {
-                FLASH_OFF -> R.drawable.ic_flash_off_vector
-                FLASH_ON -> R.drawable.ic_flash_on_vector
-                FLASH_AUTO -> R.drawable.ic_flash_auto_vector
-                else -> R.drawable.ic_flashlight_vector
-            }
-            toggleFlash.setShadowIcon(flashDrawable)
-            toggleFlash.transitionName = "${getString(R.string.toggle_flash)}$flashMode"
-        }
-    }
-
-    override fun onVideoRecordingStarted() {
-        binding.apply {
-            cameraModeHolder.beInvisible()
-            videoRecCurrTimer.beVisible()
-
-            toggleCamera.fadeOut()
-            lastPhotoVideoPreview.fadeOut()
-
-            layoutTop.changeResolution.isEnabled = false
-            layoutTop.settings.isEnabled = false
-            shutter.post {
-                if (!isDestroyed) {
-                    shutter.isSelected = true
-                }
-            }
-        }
-    }
-
-    override fun onVideoRecordingStopped() {
-        binding.apply {
-            cameraModeHolder.beVisible()
-
-            toggleCamera.fadeIn()
-            lastPhotoVideoPreview.fadeIn()
-
-            videoRecCurrTimer.text = 0.getFormattedDuration()
-            videoRecCurrTimer.beGone()
-
-            shutter.isSelected = false
-            layoutTop.changeResolution.isEnabled = true
-            layoutTop.settings.isEnabled = true
-        }
-    }
-
-    override fun onVideoDurationChanged(durationNanos: Long) {
-        val seconds = TimeUnit.NANOSECONDS.toSeconds(durationNanos).toInt()
-        binding.videoRecCurrTimer.text = seconds.getFormattedDuration()
-    }
-
-    override fun onFocusCamera(xPos: Float, yPos: Float) {
-        mFocusCircleView.drawFocusCircle(xPos, yPos)
-    }
-
-    override fun onTouchPreview() {
-        closeOptions()
-    }
-
-    private fun closeOptions(): Boolean {
-        binding.apply {
-            if (mediaSizeToggleGroup?.isVisible() == true ||
-                layoutFlash.flashToggleGroup.isVisible() || layoutTimer.timerToggleGroup.isVisible()
-            ) {
-                val transitionSet = createTransition()
-                TransitionManager.go(defaultScene, transitionSet)
-                mediaSizeToggleGroup?.beGone()
-                layoutFlash.flashToggleGroup.beGone()
-                layoutTimer.timerToggleGroup.beGone()
-                layoutTop.defaultIcons.beVisible()
-                return true
-            }
-
-            return false
-        }
-    }
-
-    override fun displaySelectedResolution(resolutionOption: ResolutionOption) {
-        val imageRes = resolutionOption.imageDrawableResId
-        binding.layoutTop.changeResolution.setShadowIcon(imageRes)
-        binding.layoutTop.changeResolution.transitionName = "${resolutionOption.buttonViewId}"
-    }
-
-    override fun showImageSizes(
-        selectedResolution: ResolutionOption,
-        resolutions: List<ResolutionOption>,
-        isPhotoCapture: Boolean,
-        isFrontCamera: Boolean,
-        onSelect: (index: Int, changed: Boolean) -> Unit
-    ) {
-        binding.topOptions.removeView(mediaSizeToggleGroup)
-        val mediaSizeToggleGroup = createToggleGroup().apply {
-            mediaSizeToggleGroup = this
-        }
-
-        binding.topOptions.addView(mediaSizeToggleGroup)
-
-        val onItemClick = { clickedViewId: Int ->
-            closeOptions()
-            val index = resolutions.indexOfFirst { it.buttonViewId == clickedViewId }
-            onSelect.invoke(index, selectedResolution.buttonViewId != clickedViewId)
-        }
-
-        val currentDegrees = when (mLastHandledOrientation) {
-            ORIENT_LANDSCAPE_LEFT -> 90
-            ORIENT_LANDSCAPE_RIGHT -> -90
-            else -> 0
-        }
-
-        resolutions.forEach {
-            val button = createButton(it, onItemClick)
-            button.rotation = currentDegrees.toFloat()
-            mediaSizeToggleGroup.addView(button)
-        }
-
-        mediaSizeToggleGroup.check(selectedResolution.buttonViewId)
-
-        val transitionSet = createTransition()
-        val mediaSizeScene = Scene(binding.topOptions, mediaSizeToggleGroup)
-        TransitionManager.go(mediaSizeScene, transitionSet)
-        binding.layoutTop.defaultIcons.beGone()
-        mediaSizeToggleGroup.beVisible()
-        mediaSizeToggleGroup.children.map { it as MaterialButton }.forEach(::setButtonColors)
-    }
-
-    private fun createButton(
-        resolutionOption: ResolutionOption,
-        onClick: (clickedViewId: Int) -> Unit
-    ): MaterialButton {
-        val params = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            weight = 1f
-        }
-
-        return (layoutInflater.inflate(R.layout.layout_button, null) as MaterialButton).apply {
-            layoutParams = params
-            setShadowIcon(resolutionOption.imageDrawableResId)
-            id = resolutionOption.buttonViewId
-            transitionName = "${resolutionOption.buttonViewId}"
-            setOnClickListener {
-                onClick.invoke(id)
-            }
-        }
-    }
-
-    private fun createTransition(): Transition {
-        val fadeTransition = Fade()
-        return TransitionSet().apply {
-            addTransition(fadeTransition)
-            this.duration = resources.getInteger(R.integer.icon_anim_duration).toLong()
-        }
-    }
-
-    override fun showFlashOptions(photoCapture: Boolean) {
-        binding.layoutFlash.apply {
-            val transitionSet = createTransition()
-            TransitionManager.go(flashModeScene, transitionSet)
-            flashAuto.beVisibleIf(photoCapture)
-            flashAlwaysOn.beVisibleIf(photoCapture)
-            flashToggleGroup.check(config.flashlightState.toFlashModeId())
-
-            flashToggleGroup.beVisible()
-            flashToggleGroup.children.forEach { setButtonColors(it as MaterialButton) }
-        }
-    }
-
-    private fun setButtonColors(button: MaterialButton) {
-        val primaryColor = getProperPrimaryColor()
-        val states = arrayOf(
-            intArrayOf(-android.R.attr.state_checked),
-            intArrayOf(android.R.attr.state_checked)
-        )
-        val iconColors = intArrayOf(
-            ContextCompat.getColor(this, org.fossify.commons.R.color.md_grey_white),
-            primaryColor
-        )
-        button.iconTint = ColorStateList(states, iconColors)
-    }
-
-    override fun adjustPreviewView(requiresCentering: Boolean) {
-        binding.apply {
-            val constraintSet = ConstraintSet()
-            constraintSet.clone(viewHolder)
-            if (requiresCentering) {
-                constraintSet.connect(
-                    previewView.id,
-                    ConstraintSet.TOP,
-                    topOptions.id,
-                    ConstraintSet.BOTTOM
-                )
-                constraintSet.connect(
-                    previewView.id,
-                    ConstraintSet.BOTTOM,
-                    cameraModeHolder.id,
-                    ConstraintSet.TOP
-                )
-            } else {
-                constraintSet.connect(
-                    previewView.id,
-                    ConstraintSet.TOP,
-                    ConstraintSet.PARENT_ID,
-                    ConstraintSet.TOP
-                )
-                constraintSet.connect(
-                    previewView.id,
-                    ConstraintSet.BOTTOM,
-                    ConstraintSet.PARENT_ID,
-                    ConstraintSet.BOTTOM
-                )
-            }
-            constraintSet.applyTo(viewHolder)
-        }
-    }
-
     override fun mediaSaved(path: String) {
-        rescanPaths(arrayListOf(path)) {
-            setupPreviewImage(true)
-            Intent(BROADCAST_REFRESH_MEDIA).apply {
-                putExtra(REFRESH_PATH, path)
-                `package` = "org.fossify.gallery"
-                sendBroadcast(this)
-            }
-        }
-
+        updateLatestMediaThumbnail()
         if (isImageCaptureIntent()) {
             setResult(RESULT_OK)
             finish()
         }
-    }
-
-    private fun scheduleTimer(timerMode: TimerMode) {
-        hideViewsOnTimerStart()
-        binding.shutter.setImageState(intArrayOf(R.attr.state_timer_cancel), true)
-        binding.timerText.beVisible()
-        var playSound = true
-        countDownTimer = object : CountDownTimer(timerMode.millisInFuture, 1000) {
-            override fun onTick(millisUntilFinished: Long) {
-                val seconds = (TimeUnit.MILLISECONDS.toSeconds(millisUntilFinished) + 1).toString()
-                binding.timerText.setText(seconds)
-                if (playSound && config.isSoundEnabled) {
-                    if (millisUntilFinished <= TIMER_2_SECONDS) {
-                        mediaSoundHelper.playTimerCountdown2SecondsSound()
-                        playSound = false
-                    } else {
-                        mediaSoundHelper.playTimerCountdownSound()
-                    }
-                }
-            }
-
-            override fun onFinish() {
-                cancelTimer()
-                mPreview!!.tryTakePicture()
-            }
-        }.start()
-    }
-
-    private fun hideViewsOnTimerStart() = binding.apply {
-        arrayOf(topOptions, toggleCamera, lastPhotoVideoPreview, cameraModeHolder).forEach {
-            it.fadeOut()
-            it.beInvisible()
-        }
-    }
-
-    private fun resetViewsOnTimerFinish() = binding.apply {
-        arrayOf(topOptions, toggleCamera, lastPhotoVideoPreview, cameraModeHolder).forEach {
-            it.fadeIn()
-            it.beVisible()
-        }
-
-        timerText.beGone()
-        shutter.setImageState(intArrayOf(-R.attr.state_timer_cancel), true)
     }
 }

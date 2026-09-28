@@ -1,7 +1,13 @@
 package org.fossify.camera.activities
 
 import android.annotation.SuppressLint
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
+import android.os.Environment
+import android.provider.DocumentsContract
+import android.util.Log
+import androidx.activity.result.contract.ActivityResultContracts
 import org.fossify.camera.BuildConfig
 import org.fossify.camera.R
 import org.fossify.camera.databinding.ActivitySettingsBinding
@@ -17,7 +23,25 @@ import java.util.*
 import kotlin.system.exitProcess
 
 class SettingsActivity : SimpleActivity() {
+    companion object {
+        private const val TAG = "SettingsActivity"
+    }
+
     private val binding by viewBinding(ActivitySettingsBinding::inflate)
+
+    /**
+     * 目录选择 launcher：用 Activity Result API，进程被系统杀掉重建后
+     * 仍能恢复选择结果（startActivityForResult 在进程死亡后结果会丢失，
+     * ColorOS 打开系统选择器时会杀掉后台的 SettingsActivity）。
+     */
+    private val pickFolderLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        Log.d(TAG, "pick result: code=${result.resultCode} uri=${result.data?.data}")
+        if (result.resultCode == RESULT_OK) {
+            result.data?.data?.let { uri -> applySaveFolder(uri) }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -221,24 +245,71 @@ class SettingsActivity : SimpleActivity() {
         settingsSavePhotos.text = getLastPart(config.savePhotosFolder)
         settingsSavePhotosHolder.setOnClickListener {
             if (isOrWasThankYouInstalled()) {
-                FilePickerDialog(
-                    this@SettingsActivity,
-                    config.savePhotosFolder,
-                    false,
-                    showFAB = true
-                ) {
-                    val path = it
-                    handleSAFDialog(it) { success ->
-                        if (success) {
-                            config.savePhotosFolder = path
-                            settingsSavePhotos.text = getLastPart(config.savePhotosFolder)
-                        }
-                    }
-                }
+                pickSaveFolder()
             } else {
                 FeatureLockedDialog(this@SettingsActivity) { }
             }
         }
+    }
+
+    /**
+     * 单次系统文件夹选择器：直接用 ACTION_OPEN_DOCUMENT_TREE，
+     * 一步「选目录 + 授权」，不再叠加应用内 FilePickerDialog。
+     */
+    private fun pickSaveFolder() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+            addFlags(
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            )
+        }
+        pickFolderLauncher.launch(intent)
+    }
+
+    private fun applySaveFolder(uri: Uri) {
+        val path = treeUriToPath(uri)
+        Log.d(TAG, "applySaveFolder: uri=$uri path=$path")
+        if (path == null) {
+            Log.w(TAG, "无法解析所选目录 uri=$uri")
+            return
+        }
+        try {
+            contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            )
+        } catch (_: Exception) {
+            // 选择器未授予持久权限时忽略
+        }
+        // 特殊目录（Android/data、obb、SD、OTG）持久化 SAF 授权；
+        // 普通公共目录（DCIM/Pictures）此调用为 no-op，靠 File 直接可写。
+        storeAndroidTreeUri(path, uri.toString())
+        config.savePhotosFolder = path
+        binding.settingsSavePhotos.text = getLastPart(path)
+    }
+
+    /**
+     * content://.../tree/primary:DCIM%2FMyCamera
+     * -> /storage/emulated/0/DCIM/MyCamera；无法解析返回 null。
+     */
+    private fun treeUriToPath(uri: Uri): String? {
+        val docId = try {
+            DocumentsContract.getDocumentId(uri)
+        } catch (e: Exception) {
+            // 部分 ROM（ColorOS）对 tree uri 调 getDocumentId 会抛异常，
+            // 退回 lastPathSegment 解析（如 "primary:DCIM"）。
+            Log.w(TAG, "getDocumentId 失败，走 lastPathSegment", e)
+            uri.lastPathSegment
+        } ?: return null
+        Log.d(TAG, "treeUriToPath docId=$docId")
+        if (!docId.startsWith("primary:")) {
+            Log.w(TAG, "非 primary docId=$docId")
+            return null
+        }
+        val rel = docId.removePrefix("primary:").trim('/')
+        val root = Environment.getExternalStorageDirectory().absolutePath
+        return root + "/" + rel
     }
 
     private fun setupPhotoQuality() {

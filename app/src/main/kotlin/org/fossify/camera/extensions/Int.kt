@@ -2,7 +2,6 @@ package org.fossify.camera.extensions
 
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
-import org.fossify.camera.R
 import org.fossify.camera.helpers.FLASH_ALWAYS_ON
 import org.fossify.camera.helpers.FLASH_AUTO
 import org.fossify.camera.helpers.FLASH_OFF
@@ -23,16 +22,6 @@ fun Int.toAppFlashMode(): Int {
         ImageCapture.FLASH_MODE_ON -> FLASH_ON
         ImageCapture.FLASH_MODE_OFF -> FLASH_OFF
         ImageCapture.FLASH_MODE_AUTO -> FLASH_AUTO
-        else -> throw IllegalArgumentException("Unknown mode: $this")
-    }
-}
-
-fun Int.toFlashModeId(): Int {
-    return when (this) {
-        FLASH_ON -> R.id.flash_on
-        FLASH_OFF -> R.id.flash_off
-        FLASH_AUTO -> R.id.flash_auto
-        FLASH_ALWAYS_ON -> R.id.flash_always_on
         else -> throw IllegalArgumentException("Unknown mode: $this")
     }
 }

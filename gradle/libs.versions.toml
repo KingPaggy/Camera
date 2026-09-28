@@ -10,6 +10,7 @@ androidx-exif-interface = "1.4.2"
 androidx-window = "1.5.1"
 androidx-camera = "1.6.1"
 androidx-ktx = "2.10.0"
+androidx-core-ktx = "1.17.0"
 #Fossify
 commons = "6.1.6"
 #Gradle
@@ -32,6 +33,7 @@ androidx-window = { module = "androidx.window:window", version.ref = "androidx-w
 androidx-lifecycle-runtime-ktx = { module = "androidx.lifecycle:lifecycle-runtime-ktx", version.ref = "androidx-ktx" }
 androidx-exifinterface = { module = "androidx.exifinterface:exifinterface", version.ref = "androidx-exif-interface" }
 androidx-documentfile = { module = "androidx.documentfile:documentfile", version.ref = "androidx-document-file" }
+androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "androidx-core-ktx" }
 #Compose
 compose-detekt = { module = "io.nlopez.compose.rules:detekt", version.ref = "detektCompose" }
 #Fossify

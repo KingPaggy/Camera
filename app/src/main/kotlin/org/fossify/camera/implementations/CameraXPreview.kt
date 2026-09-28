@@ -470,6 +470,17 @@ class CameraXPreview(
         return isPhotoCapture
     }
 
+    override fun getExposureRange(): IntRange? {
+        val exposureState = camera?.cameraInfo?.exposureState ?: return null
+        if (!exposureState.isExposureCompensationSupported) return null
+        val range = exposureState.exposureCompensationRange
+        return range.lower..range.upper
+    }
+
+    override fun setExposure(index: Int) {
+        camera?.cameraControl?.setExposureCompensationIndex(index)
+    }
+
     override fun showChangeResolution() {
         val selectedResolution = if (isPhotoCapture) {
             imageQualityManager.getUserSelectedResolution(cameraSelector).toResolutionOption()

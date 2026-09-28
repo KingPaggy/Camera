@@ -19,4 +19,8 @@ interface MyPreview {
     fun initVideoMode()
 
     fun showChangeResolution()
+
+    fun getExposureRange(): IntRange?
+
+    fun setExposure(index: Int)
 }

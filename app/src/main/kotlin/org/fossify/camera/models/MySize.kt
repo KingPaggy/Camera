@@ -85,6 +85,10 @@ data class MySize(val width: Int, val height: Int, val isFullScreen: Boolean = f
     }
 
     fun toResolutionOption(): ResolutionOption {
-        return ResolutionOption(buttonViewId = getButtonId(), imageDrawableResId = getImageResId())
+        return ResolutionOption(
+            label = "${width}x${height}",
+            buttonViewId = getButtonId(),
+            imageDrawableResId = getImageResId(),
+        )
     }
 }

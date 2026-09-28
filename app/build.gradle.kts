@@ -138,6 +138,7 @@ detekt {
 }
 
 dependencies {
+    implementation(project(":drawcore"))
     implementation(libs.fossify.commons)
     implementation(libs.bundles.androidx.camera)
     implementation(libs.androidx.documentfile)
