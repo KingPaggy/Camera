@@ -13,6 +13,7 @@ import android.util.Size
 import android.view.KeyEvent
 import android.view.Window
 import android.view.WindowManager
+import android.widget.Toast
 import androidx.camera.view.PreviewView
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -409,9 +410,15 @@ class MainActivity : SimpleActivity(), PhotoProcessor.MediaSavedListener,
     }
 
     /** 打开系统相册/图库查看最近媒体（与原版 Fossify 一致：content uri
-     *  先转文件路径，再 openPathIntent——OPPO 相册只认文件路径）。 */
+     *  先转文件路径，再 openPathIntent——OPPO 相册只认文件路径）。
+     *  空态（latestMediaUri == null）时轻量 Toast 提示，不打开图库。 */
     private fun openLatestMedia() {
-        val uri = latestMediaUri ?: return
+        val uri = latestMediaUri
+        if (uri == null) {
+            Toast.makeText(this, R.string.no_media_yet,
+                Toast.LENGTH_SHORT).show()
+            return
+        }
         val path = applicationContext.getRealPathFromURI(uri) ?: uri.toString()
         try {
             openPathIntent(path, false, BuildConfig.APPLICATION_ID)

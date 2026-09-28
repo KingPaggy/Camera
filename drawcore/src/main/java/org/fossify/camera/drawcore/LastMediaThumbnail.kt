@@ -13,9 +13,10 @@ import android.view.View
 /**
  * 最近照片缩略图（非 View 自绘助手，参照 ShutterButton / CanvasButton 范式）。
  *
- * 视觉：bounds 内切圆内绘制圆形裁剪的 Bitmap 缩略图，外圈 2dp 白描边；
- * 按下时叠加一层半透明白色覆盖层作为按压反馈。setBitmap(null) 时组件
- * 完全隐藏——draw 不绘制任何内容，checkTouchEvent 恒返回 false。
+ * 视觉：bounds 内圆角方内绘制 center-crop 的 Bitmap 缩略图，外圈 2dp
+ * 白描边；按下时叠加一层半透明白色覆盖层作为按压反馈。setBitmap(null)
+ * 表示「空态」：按钮仍常驻显示（纯黑填充 + 白描边），且可点击触发
+ * onLastMediaClick，空态点击行为由 app 侧决定。
  *
  * 裁剪方案：BitmapShader(CLAMP) + drawCircle。用 Matrix 把 bitmap 按
  * center-crop(cover) 缩放到内切圆直径，圆心对齐 bounds 中心；drawCircle
@@ -48,7 +49,7 @@ class LastMediaThumbnail(private val parent: View) {
         parent.invalidate()
     }
 
-    /** null 表示无数据：组件隐藏，不绘制、不消费触摸事件。
+    /** null 表示「空态」：按钮常驻显示（纯黑填充），仍可点击。
      *  等值守卫：onDraw 每帧同步同一 bitmap 时直接返回，避免把按压态
      *  pressed 重置导致 UP 永远触发不了点击，也避免无谓的重复 invalidate。 */
     fun setBitmap(bitmap: Bitmap?) {
@@ -63,7 +64,6 @@ class LastMediaThumbnail(private val parent: View) {
     }
 
     fun draw(canvas: Canvas) {
-        val b = bitmap ?: return
         val w = right - left
         val h = bottom - top
         if (w <= 0f || h <= 0f) return
@@ -71,22 +71,30 @@ class LastMediaThumbnail(private val parent: View) {
         val corner = DpUtils.dp(12).toFloat()
         val stroke = DpUtils.dp(2).toFloat()
 
-        // 1) 圆角方形裁剪的缩略图：BitmapShader + center-crop
+        // 1) 内层填充：有图 → BitmapShader center-crop 缩略图；
+        //    空态（bitmap == null）→ 纯黑填充，按钮常驻显示。
         val inner = android.graphics.RectF(
             left + stroke / 2, top + stroke / 2,
             right - stroke / 2, bottom - stroke / 2)
-        val shader = BitmapShader(b, Shader.TileMode.CLAMP,
-            Shader.TileMode.CLAMP)
-        val scale = inner.width() / minOf(b.width, b.height)
-        shaderMatrix.setScale(scale, scale)
-        shaderMatrix.postTranslate(
-            left + inner.width() / 2f - b.width * scale / 2f,
-            top + inner.height() / 2f - b.height * scale / 2f)
-        shader.setLocalMatrix(shaderMatrix)
-        paint.shader = shader
-        paint.style = Paint.Style.FILL
-        canvas.drawRoundRect(inner, corner, corner, paint)
-        paint.shader = null
+        val b = bitmap
+        if (b != null) {
+            val shader = BitmapShader(b, Shader.TileMode.CLAMP,
+                Shader.TileMode.CLAMP)
+            val scale = inner.width() / minOf(b.width, b.height)
+            shaderMatrix.setScale(scale, scale)
+            shaderMatrix.postTranslate(
+                left + inner.width() / 2f - b.width * scale / 2f,
+                top + inner.height() / 2f - b.height * scale / 2f)
+            shader.setLocalMatrix(shaderMatrix)
+            paint.shader = shader
+            paint.style = Paint.Style.FILL
+            canvas.drawRoundRect(inner, corner, corner, paint)
+            paint.shader = null
+        } else {
+            paint.style = Paint.Style.FILL
+            paint.color = EMPTY_FILL_COLOR
+            canvas.drawRoundRect(inner, corner, corner, paint)
+        }
 
         // 2) 外圈 2dp 白描边（圆角方形）
         paint.style = Paint.Style.STROKE
@@ -106,7 +114,7 @@ class LastMediaThumbnail(private val parent: View) {
     }
 
     fun checkTouchEvent(event: MotionEvent): Boolean {
-        if (bitmap == null) return false
+        // 空态（bitmap == null）同样可点击：不拦截触摸。
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 if (!hit(event.x, event.y)) return false
@@ -144,5 +152,8 @@ class LastMediaThumbnail(private val parent: View) {
     private companion object {
         /** 按压覆盖层：约 33% 不透明白。 */
         const val PRESSED_OVERLAY = 0x55FFFFFF
+
+        /** 空态填充：相册无媒体时按钮显示纯黑。 */
+        const val EMPTY_FILL_COLOR = Color.BLACK
     }
 }

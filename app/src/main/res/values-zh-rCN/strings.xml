@@ -23,6 +23,7 @@
     <string name="toggle_photo_video">切换照片/视频模式</string>
     <string name="change_resolution">更改分辨率</string>
     <string name="view_last_media">查看上次拍的媒体文件</string>
+    <string name="no_media_yet">相册暂无照片</string>
     <string name="toggle_camera">切换前置/后置摄像头</string>
     <string name="toggle_flash">切换闪光灯模式</string>
     <string name="toggle_timer">切换计时器模式</string>
